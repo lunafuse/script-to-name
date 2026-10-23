@@ -29,6 +29,12 @@
     background:var(--panel); border-bottom:1px solid var(--line); flex-wrap:wrap;
   }
   #topbar .logo{font-weight:bold; letter-spacing:.05em; color:var(--accent);}
+  #fileName{font-size:12px; color:var(--muted, #999); max-width:220px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
+  #legacyBar{
+    display:none; align-items:center; gap:10px; padding:6px 12px; font-size:12px;
+    background:var(--panel2); border-bottom:1px solid var(--line);
+  }
+  #legacyBar.show{display:flex;}
   #title{
     background:var(--panel2); border:1px solid var(--line); color:var(--text);
     border-radius:6px; padding:5px 10px; width:180px; font-size:13px;
@@ -169,10 +175,9 @@
 <div id="app">
   <div id="topbar">
     <span class="logo">ネームプロト</span>
-    <select id="projSel" title="プロジェクト切り替え"></select>
-    <button class="btn" id="btnNewProj" title="新規プロジェクト">＋新規</button>
-    <button class="btn" id="btnDupProj" title="現在のプロジェクトを複製">複製</button>
-    <button class="btn" id="btnDelProj" title="現在のプロジェクトを削除">削除</button>
+    <button class="btn" id="btnNew" title="空の作品を始める">新規</button>
+    <button class="btn" id="btnSample" title="サンプル台本を開く">サンプル</button>
+    <span id="fileName" title="開いている作品ファイル"></span>
     <input id="title" placeholder="作品タイトル">
     <span class="toolLabel">用紙</span>
     <select id="paperSel" title="級数の実寸換算に使う用紙サイズ">
@@ -190,9 +195,14 @@
     <span class="spacer"></span>
     <button class="btn" id="btnSave" title="前回と同じファイルに上書き保存">保存</button>
     <button class="btn" id="btnSaveAs" title="場所と名前を選んで保存">別名</button>
-    <button class="btn" id="btnLoad">読込</button>
+    <button class="btn" id="btnLoad" title="作品ファイル（.json）を開く">読込</button>
     <button class="btn" id="btnTxt">テキスト書き出し</button>
     <input type="file" id="fileInput" accept=".json" hidden>
+  </div>
+  <div id="legacyBar">
+    <span id="legacyMsg"></span>
+    <button class="btn" id="btnLegacyExport">ファイルに書き出す</button>
+    <button class="btn" id="btnLegacyClear">ブラウザ内から消す</button>
   </div>
   <div id="main">
     <div id="scriptPane">
@@ -247,12 +257,12 @@
    台本テキストが唯一の原稿。パースしてページ構造を導出する。
    手動調整（フキダシ位置）は content キーで保持し、再パース後も維持。
 ================================================================ */
-/* 保存はプロジェクト単位。localStorage に
-   nemsproto-index …… {current, order:[id,...]}
-   nemsproto-p-<id> … プロジェクト本体（台本・描き込み・コマ割り・フキダシ調整の全部） */
-const LS_INDEX = "nemsproto-index";
-const LS_PREFIX = "nemsproto-p-";
-const LS_LEGACY = "nemsproto-v1"; // 旧単一保存からの移行元
+/* 作品はファイル（.json）にだけ置く。アプリは開いた作品をメモリに持つだけで、
+   ブラウザ内には保存せず、起動時に何も自動で読み込まない。
+   下の localStorage のキーは、以前ブラウザ内に溜めていた作品を書き出すためだけに読む */
+const LS_INDEX = "nemsproto-index";   // 旧: {current, order:[id,...]}
+const LS_PREFIX = "nemsproto-p-";     // 旧: プロジェクト本体
+const LS_LEGACY = "nemsproto-v1";     // 旧々: 単一保存
 const PAPER_W_MM = {B4: 257, A4: 210, B5: 182}; // 級数→px換算に使う用紙幅
 
 function defaults(){
@@ -268,28 +278,18 @@ function defaults(){
   };
 }
 const state = defaults();
-let currentProjId = null;
+let fileHandle = null;  // 開いている作品ファイル（File System Access API）
+let fileName = "";      // 表示用のファイル名（未保存なら空）
+let dirty = false;      // 最後に保存・読込してから変更があるか
 let pages = [];        // パース結果
 let editPageIdx = -1;  // 編集中ページ (-1=閉)
 const histories = {};  // pageIdx -> 取り消し履歴（実行時のみ）
 
-function loadIndex(){ try{ return JSON.parse(localStorage.getItem(LS_INDEX)); }catch(e){ return null; } }
-function saveIndex(idx){ try{ localStorage.setItem(LS_INDEX, JSON.stringify(idx)); }catch(e){} }
-function readProj(id){ try{ return JSON.parse(localStorage.getItem(LS_PREFIX+id)) || {}; }catch(e){ return {}; } }
 function resetStateTo(data){
   Object.keys(state).forEach(k => delete state[k]);
   Object.assign(state, defaults(), data || {});
   Object.keys(histories).forEach(k => delete histories[k]);
 }
-function createProject(data){
-  const id = "p" + Date.now().toString(36) + Math.random().toString(36).slice(2,6);
-  try{ localStorage.setItem(LS_PREFIX+id, JSON.stringify(data)); }catch(e){}
-  const idx = loadIndex() || {current: id, order: []};
-  idx.order.push(id); idx.current = id;
-  saveIndex(idx);
-  return id;
-}
-
 /* ---------------- パース ---------------- */
 function parseScript(src){
   const result = [];
@@ -1180,10 +1180,26 @@ function exportPagePNG(idx){
 }
 
 /* ---------------- 保存・読込 ---------------- */
+// 変更の印をつけるだけ（保存はファイルへの明示的な保存のみ）
 function persist(){
-  try{
-    if(currentProjId) localStorage.setItem(LS_PREFIX+currentProjId, JSON.stringify(state));
-  }catch(e){}
+  if(!dirty){ dirty = true; renderFileName(); }
+}
+function renderFileName(){
+  const name = fileName || "未保存の作品";
+  document.getElementById("fileName").textContent = name + (dirty ? " ●" : "");
+  document.title = (dirty ? "● " : "") + (state.title || fileName || "無題") + " — ネームプロト";
+}
+function confirmDiscard(){
+  return !dirty || confirm("保存していない変更があります。破棄して続けますか？");
+}
+function openDoc(data, handle, name){
+  resetStateTo(data);
+  fileHandle = handle || null;
+  fileName = name || "";
+  dirty = false;
+  if(editPageIdx >= 0){ editPageIdx = -1; editor.classList.remove("open"); }
+  initFromState();
+  renderFileName();
 }
 function toast(msg){
   const t = document.getElementById("toast");
@@ -1214,58 +1230,21 @@ scriptEl.addEventListener("input", () => {
     persist();
   }, 250);
 });
-titleEl.addEventListener("input", ()=>{ state.title = titleEl.value; persist(); renderProjectSelect(); });
+titleEl.addEventListener("input", ()=>{ state.title = titleEl.value; persist(); renderFileName(); });
 
-/* ---------------- プロジェクト切り替え ---------------- */
-const projSel = document.getElementById("projSel");
-function renderProjectSelect(){
-  const idx = loadIndex(); if(!idx) return;
-  projSel.innerHTML = "";
-  idx.order.forEach(id => {
-    const o = document.createElement("option");
-    o.value = id;
-    o.textContent = readProj(id).title || "無題";
-    projSel.appendChild(o);
-  });
-  projSel.value = currentProjId;
-}
-function openProject(id){
-  currentProjId = id;
-  const idx = loadIndex(); idx.current = id; saveIndex(idx);
-  resetStateTo(readProj(id));
-  if(editPageIdx >= 0){ editPageIdx = -1; editor.classList.remove("open"); }
-  initFromState();
-  renderProjectSelect();
-}
-projSel.addEventListener("change", () => {
-  if(projSel.value === currentProjId) return;
-  persist();
-  openProject(projSel.value);
+/* ---------------- 新規・サンプル ---------------- */
+document.getElementById("btnNew").addEventListener("click", () => {
+  if(!confirmDiscard()) return;
+  openDoc(Object.assign(defaults(), {paper: state.paper}), null, "");
 });
-document.getElementById("btnNewProj").addEventListener("click", () => {
-  persist();
-  openProject(createProject(Object.assign(defaults(), {title:"無題", paper: state.paper})));
+document.getElementById("btnSample").addEventListener("click", () => {
+  if(!window.NEMS_SAMPLE){ toast("サンプル（sample.js）が見つかりません"); return; }
+  if(!confirmDiscard()) return;
+  openDoc(Object.assign(defaults(), {title: NEMS_SAMPLE.title || "", script: NEMS_SAMPLE.script || ""}), null, "");
+  toast("サンプルを開きました（保存するまでファイルにはなりません）");
 });
-document.getElementById("btnDupProj").addEventListener("click", () => {
-  persist();
-  const copy = JSON.parse(JSON.stringify(state));
-  copy.title = (copy.title || "無題") + "のコピー";
-  openProject(createProject(copy));
-  toast("複製しました");
-});
-document.getElementById("btnDelProj").addEventListener("click", () => {
-  if(!confirm("「" + (state.title || "無題") + "」を削除しますか？（元に戻せません）")) return;
-  localStorage.removeItem(LS_PREFIX + currentProjId);
-  handleDel(currentProjId); // 記憶していた保存先も忘れる
-  const idx = loadIndex();
-  idx.order = idx.order.filter(id => id !== currentProjId);
-  saveIndex(idx);
-  if(!idx.order.length){
-    openProject(createProject(Object.assign(defaults(), {title:"無題"})));
-  }else{
-    openProject(idx.order[0]);
-  }
-  toast("削除しました");
+window.addEventListener("beforeunload", (e) => {
+  if(dirty){ e.preventDefault(); e.returnValue = ""; }
 });
 
 /* ---------------- 用紙サイズ ---------------- */
@@ -1284,57 +1263,21 @@ document.getElementById("colSeg").addEventListener("click", (e) => {
 });
 
 /* ---------------- ファイル保存（同じファイルへの上書き対応） ----------------
-   File System Access API があれば、初回だけ保存先を選び、以後は上書き。
-   保存先ハンドルはプロジェクトごとに IndexedDB へ永続化。
+   File System Access API があれば、初回だけ保存先を選び、以後は同じファイルへ上書き。
+   保存先は開いている間だけ覚える（次に開いたときは自動で読み込まない）。
    非対応ブラウザは従来どおりダウンロードにフォールバック */
 const FS_OK = "showSaveFilePicker" in window;
-function fsdb(){
-  return new Promise((res, rej) => {
-    const r = indexedDB.open("nemsproto-fs", 1);
-    r.onupgradeneeded = () => r.result.createObjectStore("handles");
-    r.onsuccess = () => res(r.result);
-    r.onerror = () => rej(r.error);
-  });
-}
-async function handleGet(id){
-  try{
-    const db = await fsdb();
-    return await new Promise((res, rej) => {
-      const rq = db.transaction("handles").objectStore("handles").get(id);
-      rq.onsuccess = () => res(rq.result || null);
-      rq.onerror = () => rej(rq.error);
-    });
-  }catch(e){ return null; }
-}
-async function handleSet(id, h){
-  try{
-    const db = await fsdb();
-    await new Promise((res, rej) => {
-      const tx = db.transaction("handles", "readwrite");
-      tx.objectStore("handles").put(h, id);
-      tx.oncomplete = res; tx.onerror = () => rej(tx.error);
-    });
-  }catch(e){}
-}
-async function handleDel(id){
-  try{
-    const db = await fsdb();
-    await new Promise((res, rej) => {
-      const tx = db.transaction("handles", "readwrite");
-      tx.objectStore("handles").delete(id);
-      tx.oncomplete = res; tx.onerror = () => rej(tx.error);
-    });
-  }catch(e){}
-}
+const FILE_TYPES = [{description:"ネームプロト プロジェクト", accept:{"application/json":[".json"]}}];
 async function saveProject(forcePicker){
   const json = JSON.stringify(state, null, 1);
   if(!FS_OK){
     download((state.title||"name") + ".json", json, "application/json");
+    dirty = false; renderFileName();
     toast("ダウンロードしました（このブラウザは上書き保存非対応）");
     return;
   }
   try{
-    let h = forcePicker ? null : await handleGet(currentProjId);
+    let h = forcePicker ? null : fileHandle;
     if(h){
       let perm = await h.queryPermission({mode:"readwrite"});
       if(perm !== "granted") perm = await h.requestPermission({mode:"readwrite"});
@@ -1343,13 +1286,14 @@ async function saveProject(forcePicker){
     if(!h){
       h = await window.showSaveFilePicker({
         suggestedName: (state.title||"name") + ".json",
-        types: [{description:"ネームプロト プロジェクト", accept:{"application/json":[".json"]}}],
+        types: FILE_TYPES,
       });
-      await handleSet(currentProjId, h);
     }
     const w = await h.createWritable();
     await w.write(json);
     await w.close();
+    fileHandle = h; fileName = h.name; dirty = false;
+    renderFileName();
     toast("「" + h.name + "」に上書き保存しました");
   }catch(err){
     if(err && err.name === "AbortError") return; // ダイアログのキャンセル
@@ -1359,17 +1303,12 @@ async function saveProject(forcePicker){
 document.getElementById("btnSave").addEventListener("click", () => saveProject(false));
 document.getElementById("btnSaveAs").addEventListener("click", () => saveProject(true));
 document.getElementById("btnLoad").addEventListener("click", async () => {
+  if(!confirmDiscard()) return;
   if(!FS_OK){ document.getElementById("fileInput").click(); return; }
   try{
-    const [h] = await window.showOpenFilePicker({
-      types: [{description:"ネームプロト プロジェクト", accept:{"application/json":[".json"]}}],
-    });
+    const [h] = await window.showOpenFilePicker({types: FILE_TYPES});
     const data = JSON.parse(await (await h.getFile()).text());
-    resetStateTo(data);
-    persist();
-    initFromState();
-    renderProjectSelect();
-    await handleSet(currentProjId, h); // 開いたファイルがそのまま上書き先になる
+    openDoc(data, h, h.name); // 開いたファイルがそのまま上書き先になる
     toast("「" + h.name + "」を読み込みました。保存で同じファイルに上書きされます");
   }catch(err){
     if(err && err.name !== "AbortError") toast("読込に失敗しました");
@@ -1379,10 +1318,7 @@ document.getElementById("fileInput").addEventListener("change", async (e) => {
   const f = e.target.files[0]; if(!f) return;
   try{
     const data = JSON.parse(await f.text());
-    resetStateTo(data); // 現在のプロジェクトの内容として読み込む
-    persist();
-    initFromState();
-    renderProjectSelect();
+    openDoc(data, null, f.name);
     toast("読み込みました");
   }catch(err){ toast("読込に失敗しました"); }
   e.target.value = "";
@@ -1466,25 +1402,93 @@ function initFromState(){
   renderOverview();
 }
 
-(function boot(){
-  let idx = loadIndex();
-  if(!idx){
-    // 初回：旧単一保存があれば移行、無ければサンプル（sample.js）で開始
-    let first = null;
-    try{ first = JSON.parse(localStorage.getItem(LS_LEGACY)); }catch(e){}
-    if(!first || !first.script){
-      first = Object.assign(defaults(), window.NEMS_SAMPLE
-        ? {title: NEMS_SAMPLE.title || "", script: NEMS_SAMPLE.script || ""} : {});
+/* ---------------- 以前ブラウザ内に溜めていた作品の書き出し ---------------- */
+function legacyDocs(){
+  const docs = [];
+  try{
+    const idx = JSON.parse(localStorage.getItem(LS_INDEX));
+    (idx && idx.order || []).forEach(id => {
+      try{ const d = JSON.parse(localStorage.getItem(LS_PREFIX+id)); if(d) docs.push(d); }catch(e){}
+    });
+  }catch(e){}
+  try{
+    const d = JSON.parse(localStorage.getItem(LS_LEGACY));
+    if(d && d.script) docs.push(d);
+  }catch(e){}
+  return docs;
+}
+function legacyKeys(){
+  const keys = [];
+  try{
+    for(let i = 0; i < localStorage.length; i++){
+      const k = localStorage.key(i);
+      if(k === LS_INDEX || k === LS_LEGACY || k.startsWith(LS_PREFIX)) keys.push(k);
     }
-    createProject(first);
-    localStorage.removeItem(LS_LEGACY);
-    idx = loadIndex();
+  }catch(e){}
+  return keys;
+}
+let legacyExported = false;
+function renderLegacyBar(){
+  const bar = document.getElementById("legacyBar");
+  const n = legacyDocs().length;
+  if(!legacyKeys().length){ bar.classList.remove("show"); return; }
+  document.getElementById("legacyMsg").textContent = legacyExported
+    ? "書き出しました。確かめたら、ブラウザ内の古い控えを消せます。"
+    : "以前ブラウザ内に保存していた作品が " + n + " 件残っています。ファイルに書き出してください。";
+  bar.classList.add("show");
+}
+function legacyFileNames(docs){
+  const used = {};
+  return docs.map(d => {
+    let base = (d.title || "無題").replace(/[\\/:*?"<>|]/g, "_").trim() || "無題";
+    let name = base + ".json", i = 2;
+    while(used[name]) name = base + "_" + (i++) + ".json";
+    used[name] = true;
+    return name;
+  });
+}
+document.getElementById("btnLegacyExport").addEventListener("click", async () => {
+  const docs = legacyDocs();
+  const names = legacyFileNames(docs);
+  try{
+    if("showDirectoryPicker" in window){
+      const dir = await window.showDirectoryPicker({mode: "readwrite"});
+      for(let i = 0; i < docs.length; i++){
+        const fh = await dir.getFileHandle(names[i], {create: true});
+        const w = await fh.createWritable();
+        await w.write(JSON.stringify(docs[i], null, 1));
+        await w.close();
+      }
+      toast("「" + dir.name + "」に " + docs.length + " 件書き出しました");
+    }else{
+      for(let i = 0; i < docs.length; i++){
+        download(names[i], JSON.stringify(docs[i], null, 1), "application/json");
+        await new Promise(r => setTimeout(r, 400));
+      }
+      toast(docs.length + " 件ダウンロードしました");
+    }
+    legacyExported = true;
+    renderLegacyBar();
+  }catch(err){
+    if(err && err.name === "AbortError") return;
+    toast("書き出しに失敗しました：" + (err && err.message || err));
   }
-  const id = idx.order.includes(idx.current) ? idx.current : idx.order[0];
-  currentProjId = id;
-  resetStateTo(readProj(id));
-  initFromState();
-  renderProjectSelect();
+});
+document.getElementById("btnLegacyClear").addEventListener("click", () => {
+  const msg = legacyExported
+    ? "ブラウザ内の古い控えを消しますか？（書き出したファイルは残ります）"
+    : "まだ書き出していません。ブラウザ内の作品を消すと元に戻せません。消しますか？";
+  if(!confirm(msg)) return;
+  legacyKeys().forEach(k => { try{ localStorage.removeItem(k); }catch(e){} });
+  try{ indexedDB.deleteDatabase("nemsproto-fs"); }catch(e){} // 旧: 保存先の記憶
+  renderLegacyBar();
+  toast("ブラウザ内の古い控えを消しました");
+});
+
+(function boot(){
+  // 何も自動で読み込まず、空の作品から始める
+  openDoc(defaults(), null, "");
+  renderLegacyBar();
   // アンチック体を読み込み、適用後に再描画（PNG書き出しにも効く）
   if(document.fonts){
     document.fonts.load('16px "Shippori Antique"').then(() => {
