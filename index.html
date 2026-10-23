@@ -196,7 +196,9 @@
     <button class="btn" id="btnSave" title="前回と同じファイルに上書き保存">保存</button>
     <button class="btn" id="btnSaveAs" title="場所と名前を選んで保存">別名</button>
     <button class="btn" id="btnLoad" title="作品ファイル（.json）を開く">読込</button>
+    <button class="btn" id="btnImport" title="Word（.docx）やテキストの台本を、この書き方に直して取り込む。ファイルを画面に落としても取り込める">取り込み</button>
     <button class="btn" id="btnTxt">テキスト書き出し</button>
+    <input type="file" id="importInput" accept=".docx,.txt,text/plain" hidden>
     <input type="file" id="fileInput" accept=".json" hidden>
   </div>
   <div id="legacyBar">
@@ -213,7 +215,8 @@
       <div id="scriptHint">
         <code>「…」</code>台詞 ／ <code>（…）</code>心の声 ／ <code>『…』</code>叫び ／ <code>((…))</code>フラッシュ<br>
         空行＝コマ ／ <code>---</code>＝ページ ／ <code>*</code>ト書き ／ <code>◇</code>空きコマ<br>
-        行末 <code>@32</code>＝級数（標準20Q） ／ <code>@固</code>＝手動配置（消すと自動に戻る）
+        行末 <code>@32</code>＝級数（標準20Q） ／ <code>@固</code>＝手動配置（消すと自動に戻る）<br>
+        「1P」でページを分けた Word・テキストの台本は「取り込み」か、ここへの貼り付けで変換
       </div>
       <textarea id="script" spellcheck="false" placeholder="ここに台本を書くと、右にネームが即時生成されます"></textarea>
     </div>
@@ -1323,6 +1326,187 @@ document.getElementById("fileInput").addEventListener("change", async (e) => {
   }catch(err){ toast("読込に失敗しました"); }
   e.target.value = "";
 });
+/* ---------------- 他の書式の台本を取り込む ----------------
+   Word や テキストで書かれた台本（「1P」でページ、名前「…」で台詞、
+   それ以外はト書き、という書き方）を、このアプリの記法に直す。
+   変換はここの convertScript だけで行い、画面まわりは下の取り込み口が呼ぶ */
+const IMPORT_OPEN = {"「":"」", "『":"』", "（":"）", "(":")"};
+// ページ番号の行（１P、2Ｐ、9～10P など）。数字とPの全角・半角を問わない
+function importPageMarker(line){
+  const m = line.normalize("NFKC").replace(/\s/g, "").match(/^(\d+)(?:[~〜\-ー](\d+))?[Pp]$/);
+  if(!m) return null;
+  const a = +m[1], b = m[2] ? +m[2] : a;
+  return {from: a, count: Math.max(1, b - a + 1)};
+}
+// 対応する閉じ括弧の位置（入れ子の「『』」にも対応）
+function importClose(s, i){
+  const stack = [];
+  for(let j = i; j < s.length; j++){
+    const c = s[j];
+    if(IMPORT_OPEN[c]) stack.push(IMPORT_OPEN[c]);
+    else if(c === stack[stack.length-1]){ stack.pop(); if(!stack.length) return j; }
+  }
+  return -1;
+}
+// 行頭の「名前＋開き括弧」を台詞として読む。名前らしくなければ null（ト書き扱い）
+function importBubbles(line){
+  const m = line.match(/^([^「『（(\s　]{0,10}?)([「『（(])/);
+  if(!m) return null;
+  const speaker = m[1];
+  if(/[。、，．！？!?]/.test(speaker.replace(/^？+/, "")) || /[でとをにがはもへのてや]$/.test(speaker)) return null;
+  const out = [];
+  let rest = line.slice(speaker.length);
+  while(rest && IMPORT_OPEN[rest[0]]){
+    const end = importClose(rest, 0);
+    if(end < 0) break;
+    let open = rest[0], body = rest.slice(1, end);
+    // 「「…」」（同時に話す）は中身だけを使う
+    while(open === "「" && body.startsWith("「") && body.endsWith("」")) body = body.slice(1, -1);
+    out.push({speaker, open, body});
+    rest = rest.slice(end + 1).trim();
+  }
+  if(!out.length) return null;
+  return {bubbles: out, rest: rest.replace(/^[と、，,]+\s*/, "").replace(/^と、/, "")};
+}
+function convertScript(src){
+  const lines = src.replace(/\r\n?/g, "\n").split("\n").map(l => l.replace(/[\s　]+$/, ""));
+  const out = [];
+  let title = "", started = false, pendingBlank = 0;
+  const header = [];
+  const blank = () => { if(out.length && out[out.length-1] !== "" && out[out.length-1] !== "---") out.push(""); };
+  for(const raw of lines){
+    const line = raw.trim();
+    const pm = importPageMarker(line);
+    if(pm){
+      if(started){
+        while(out.length && out[out.length-1] === "") out.pop();
+        out.push("---");
+        for(let k = 1; k < pendingBlank; k++) out.push("---"); // 9～10P のような複数ページ分は空ページで埋める
+      }
+      started = true; pendingBlank = pm.count;
+      continue;
+    }
+    if(!started){ if(line) header.push(line); continue; }
+    if(/^\d+話\s*完/.test(line.normalize("NFKC"))) break; // 末尾の「1話完。」以降は本文の外
+    if(!line){ blank(); continue; }
+    const notes = [];
+    const b = importBubbles(line);
+    if(b){
+      b.bubbles.forEach(x => {
+        if(x.open === "『"){ // 原稿の『』は電話など。アプリでは叫びの記号なので普通の台詞に直す
+          out.push(x.speaker + "「" + x.body + "」");
+          notes.push("原稿では『』（電話など）");
+        }else if(x.open === "「"){
+          out.push(x.speaker + "「" + x.body + "」");
+        }else{
+          out.push(x.speaker + "（" + x.body + "）");
+        }
+      });
+      if(b.rest) notes.push(b.rest);
+    }else{
+      notes.push(line);
+    }
+    notes.forEach(n => out.push("＊" + n.replace(/^[*＊]\s*/, "")));
+  }
+  while(out.length && (out[out.length-1] === "" )) out.pop();
+  for(let k = 1; k < pendingBlank; k++) out.push("---");
+  // 題名：最初の2行（作品名と話数）を括弧を外してつなぐ
+  if(header.length){
+    const strip = s => s.replace(/^「(.*)」$/, "$1");
+    title = strip(header[0]);
+    if(header[1] && /話/.test(header[1])) title += " " + header[1];
+  }
+  return {title, script: out.join("\n")};
+}
+// 台本らしいテキストか（ページ番号の行が2つ以上ある）
+function looksLikeForeignScript(text){
+  return text.split(/\r?\n/).filter(l => importPageMarker(l.trim())).length >= 2;
+}
+/* ---- 取り込み口（.docx / .txt） ---- */
+async function unzipEntry(buf, name){
+  const dv = new DataView(buf), u8 = new Uint8Array(buf);
+  let eocd = -1;
+  for(let i = buf.byteLength - 22; i >= Math.max(0, buf.byteLength - 65557); i--){
+    if(dv.getUint32(i, true) === 0x06054b50){ eocd = i; break; }
+  }
+  if(eocd < 0) throw new Error("zip ではありません");
+  let p = dv.getUint32(eocd + 16, true);
+  const n = dv.getUint16(eocd + 10, true);
+  const dec = new TextDecoder();
+  for(let k = 0; k < n; k++){
+    const method = dv.getUint16(p + 10, true), csize = dv.getUint32(p + 20, true);
+    const fnl = dv.getUint16(p + 28, true), exl = dv.getUint16(p + 30, true), cml = dv.getUint16(p + 32, true);
+    const off = dv.getUint32(p + 42, true);
+    const fname = dec.decode(u8.subarray(p + 46, p + 46 + fnl));
+    if(fname === name){
+      const start = off + 30 + dv.getUint16(off + 26, true) + dv.getUint16(off + 28, true);
+      const data = u8.subarray(start, start + csize);
+      if(method === 0) return dec.decode(data);
+      const ds = new Blob([data]).stream().pipeThrough(new DecompressionStream("deflate-raw"));
+      return await new Response(ds).text();
+    }
+    p += 46 + fnl + exl + cml;
+  }
+  throw new Error(name + " が見つかりません");
+}
+async function docxToText(buf){
+  const xml = await unzipEntry(buf, "word/document.xml");
+  const doc = new DOMParser().parseFromString(xml, "application/xml");
+  const W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main";
+  const body = doc.getElementsByTagNameNS(W, "body")[0];
+  const lines = [];
+  [...body.getElementsByTagNameNS(W, "p")].forEach(p => {
+    let t = "";
+    const walk = el => {
+      for(const c of el.children){
+        if(c.namespaceURI === W && c.localName === "t") t += c.textContent;
+        else if(c.namespaceURI === W && c.localName === "tab") t += "\t";
+        else if(c.namespaceURI === W && (c.localName === "br" || c.localName === "cr")) t += "\n";
+        else if(!(c.namespaceURI === W && c.localName === "p")) walk(c);
+      }
+    };
+    walk(p);
+    lines.push(t);
+  });
+  return lines.join("\n");
+}
+function importText(text, fromName){
+  if(!confirmDiscard()) return;
+  const r = convertScript(text);
+  openDoc(Object.assign(defaults(), {paper: state.paper, title: r.title || (fromName || "").replace(/\.[^.]+$/, ""), script: r.script}), null, "");
+  toast("取り込みました（" + pages.length + "ページ）。保存するまでファイルにはなりません");
+}
+async function importFile(f){
+  try{
+    const text = /\.docx$/i.test(f.name) ? await docxToText(await f.arrayBuffer()) : await f.text();
+    importText(text, f.name);
+  }catch(err){ toast("取り込みに失敗しました：" + (err && err.message || err)); }
+}
+document.getElementById("btnImport").addEventListener("click", () => document.getElementById("importInput").click());
+document.getElementById("importInput").addEventListener("change", (e) => {
+  const f = e.target.files[0]; if(f) importFile(f);
+  e.target.value = "";
+});
+// ファイルをウィンドウに落とすと取り込む（.json は普通の読込）
+window.addEventListener("dragover", (e) => { if(e.dataTransfer.types.includes("Files")) e.preventDefault(); });
+window.addEventListener("drop", async (e) => {
+  const f = e.dataTransfer.files[0]; if(!f) return;
+  e.preventDefault();
+  if(/\.json$/i.test(f.name)){
+    if(!confirmDiscard()) return;
+    try{ openDoc(JSON.parse(await f.text()), null, f.name); toast("読み込みました"); }
+    catch(err){ toast("読込に失敗しました"); }
+  }else importFile(f);
+});
+// 他の書式の台本を台本エディタに貼り付けたら、変換するか尋ねる
+scriptEl.addEventListener("paste", (e) => {
+  const text = e.clipboardData && e.clipboardData.getData("text/plain");
+  if(!text || !looksLikeForeignScript(text)) return;
+  if(!confirm("ページ番号（1P など）付きの台本のようです。このアプリの書き方に変換して取り込みますか？\n（キャンセルするとそのまま貼り付けます）")) return;
+  e.preventDefault();
+  importText(text, "");
+});
+
 document.getElementById("btnTxt").addEventListener("click", () => {
   download((state.title||"name") + ".txt", state.script, "text/plain");
 });
