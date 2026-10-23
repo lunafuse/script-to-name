@@ -116,7 +116,8 @@
   }
   /* フキダシの種類 */
   .bubble.thought{ border:none; background:transparent; }
-  .bubble.shout, .bubble.flash{
+  .bubble.narration{ border-radius:0; }
+  .bubble.shout, .bubble.flash, .bubble.phone{
     border:none; background:transparent; font-weight:bold; z-index:0;
   }
   .bubbleHandle{
@@ -131,9 +132,17 @@
     background:rgba(255,255,255,.85); padding:0 3px; border-radius:3px;
     white-space:nowrap;
   }
-  .note{
-    position:absolute; color:#888; font-size:9px; line-height:1.4;
-    max-width:60%; pointer-events:none; white-space:pre-wrap;
+  /* ト書き：コマごとに1つの箱にまとめ、左下に寄せる（フキダシは右上から並ぶ） */
+  .noteBox{
+    position:absolute; color:#777; line-height:1.35; pointer-events:none;
+    background:rgba(255,255,255,.78); padding:.2em .35em; border-radius:2px;
+    overflow:hidden; font-family:"Hiragino Kaku Gothic ProN","Yu Gothic",sans-serif;
+  }
+  .noteBox div{padding-left:1em; text-indent:-1em; white-space:pre-wrap; overflow-wrap:anywhere;}
+  .noteBox div::before{content:"＊";}
+  .noteBox.clipped{
+    -webkit-mask-image:linear-gradient(to top, transparent 0, #000 1.4em);
+    mask-image:linear-gradient(to top, transparent 0, #000 1.4em);
   }
   /* ---------- editor overlay ---------- */
   #editor{
@@ -213,7 +222,7 @@
         <span id="stats"></span>
       </header>
       <div id="scriptHint">
-        <code>「…」</code>台詞 ／ <code>（…）</code>心の声 ／ <code>『…』</code>叫び ／ <code>((…))</code>フラッシュ<br>
+        <code>「…」</code>台詞 ／ <code>（…）</code>心の声 ／ <code>『…』</code>叫び ／ <code>((…))</code>フラッシュ ／ <code>【…】</code>電話 ／ <code>N「…」</code>ナレーション<br>
         空行＝コマ ／ <code>---</code>＝ページ ／ <code>*</code>ト書き ／ <code>◇</code>空きコマ<br>
         行末 <code>@32</code>＝級数（標準20Q） ／ <code>@固</code>＝手動配置（消すと自動に戻る）<br>
         「1P」でページを分けた Word・テキストの台本は「取り込み」か、ここへの貼り付けで変換
@@ -339,8 +348,10 @@ function parseTextLine(line){
   if(m = line.match(/^(.{0,12}?)[（(]{2}(.+)[）)]{2}$/s)){ type = "flash"; }
   else if(m = line.match(/^(.{0,12}?)『(.+)』$/s)){ type = "shout"; }
   else if(m = line.match(/^(.{0,12}?)[（(](.+)[）)]$/s)){ type = "thought"; }
+  else if(m = line.match(/^(.{0,12}?)【(.+)】$/s)){ type = "phone"; }
   else if(m = line.match(/^(.{0,12}?)「(.+)」$/s)){ type = "speech"; }
-  const speaker = m ? m[1] : "";
+  let speaker = m ? m[1] : "";
+  if(type === "speech" && /^(?:[NＮ]|ナレ|ナレーション)$/.test(speaker)){ type = "narration"; speaker = ""; } // N「…」はナレーションの四角い枠
   const body = m ? m[2] : line;
   return {speaker, body, q, type, pinned};
 }
@@ -580,6 +591,8 @@ const BUBBLE_PAD = {
   thought: {h:1.4, w:1.2, css:".6em .5em"},
   shout:   {h:3.4, w:3.2, css:"1.6em 1.5em"},
   flash:   {h:4.6, w:4.2, css:"2.2em 2em"}, // ウニフラは谷が深いので余白広め
+  narration:{h:1.6, w:1.4, css:".8em .7em"},
+  phone:   {h:3.0, w:2.6, css:"1.5em 1.3em"},
 };
 /* トゲ形状（叫び・フラッシュ用）のポリゴン点列を 0-100 座標で生成 */
 function starPts(n, inner){
@@ -592,6 +605,7 @@ function starPts(n, inner){
 }
 const SHOUT_PTS = starPts(12, 0.78); // 叫び：大ぶりのトゲの爆発型
 const FLASH_PTS = starPts(40, 0.50); // フラッシュ：長い針のウニフラッシュ
+const PHONE_PTS = starPts(30, 0.90); // 電話：細かいギザギザの縁
 
 function bubbleMetrics(body, pagePx, panelHFrac, q, box, type){
   const pad = BUBBLE_PAD[type] || BUBBLE_PAD.speech;
@@ -632,6 +646,7 @@ function bubbleMetrics(body, pagePx, panelHFrac, q, box, type){
 }
 
 /* ---------------- ページ描画（一覧・編集で共用） ---------------- */
+const NOTE_W = 0.72, NOTE_H = 0.6; // ト書きの箱の最大サイズ（コマの幅・高さに対する比）
 function renderPageInto(el, page, pageIdx, interactive){
   el.innerHTML = "";
   const pagePx = el.clientWidth || 300;
@@ -669,15 +684,25 @@ function renderPageInto(el, page, pageIdx, interactive){
     const r = quadBBox(q);
 
     // ト書き
-    panel.notes.forEach((note, ni) => {
-      const nd = document.createElement("div");
-      nd.className = "note";
-      nd.textContent = note;
-      nd.style.left = ((r.x + 0.015)*100)+"%";
-      nd.style.top  = ((r.y + 0.012)*100 + ni*4)+"%";
-      nd.style.fontSize = (pagePx*0.019)+"px";
-      el.appendChild(nd);
-    });
+    if(panel.notes.length){
+      const nb = document.createElement("div");
+      nb.className = "noteBox";
+      panel.notes.forEach(note => {
+        const d = document.createElement("div");
+        d.textContent = note;
+        nb.appendChild(d);
+      });
+      nb.style.left = ((r.x + 0.012)*100)+"%";
+      nb.style.bottom = ((1 - (r.y + r.h) + 0.008/1.4142)*100)+"%";
+      nb.style.maxWidth = (r.w*NOTE_W*100)+"%";
+      nb.style.maxHeight = (r.h*NOTE_H*100)+"%";
+      nb.style.fontSize = (pagePx*0.017)+"px";
+      el.appendChild(nb);
+      if(nb.scrollHeight > nb.clientHeight + 1){ // 収まらない分は下をぼかして切る。全文はホバーで
+        nb.classList.add("clipped");
+        nb.title = panel.notes.join("\n");
+      }
+    }
 
     // フキダシ（右から配置）
     let cursorX = r.x + r.w - 0.02;
@@ -709,16 +734,16 @@ function renderPageInto(el, page, pageIdx, interactive){
       b.style.fontSize = fs+"px";
       b.style.padding = (BUBBLE_PAD[t.type] || BUBBLE_PAD.speech).css;
       b.textContent = m.lines.join("\n"); // 文節折り返し済みの行で表示（子要素の追加より先）
-      if(t.type === "shout" || t.type === "flash"){
+      if(t.type === "shout" || t.type === "flash" || t.type === "phone"){
         const bs = document.createElementNS(svgNS, "svg");
         bs.setAttribute("viewBox", "0 0 100 100");
         bs.setAttribute("preserveAspectRatio", "none");
         bs.style.cssText = "position:absolute;inset:0;width:100%;height:100%;z-index:-1;overflow:visible;";
         const poly = document.createElementNS(svgNS, "polygon");
-        poly.setAttribute("points", t.type === "shout" ? SHOUT_PTS : FLASH_PTS);
+        poly.setAttribute("points", t.type === "shout" ? SHOUT_PTS : t.type === "phone" ? PHONE_PTS : FLASH_PTS);
         poly.setAttribute("fill", "#fff");
         poly.setAttribute("stroke", "#222");
-        poly.setAttribute("stroke-width", t.type === "shout" ? Math.max(1.5, pagePx*0.006) : Math.max(1, pagePx*0.003));
+        poly.setAttribute("stroke-width", t.type === "shout" ? Math.max(1.5, pagePx*0.006) : t.type === "phone" ? Math.max(1, pagePx*0.004) : Math.max(1, pagePx*0.003));
         poly.setAttribute("vector-effect", "non-scaling-stroke");
         bs.appendChild(poly);
         b.appendChild(bs);
@@ -1071,12 +1096,39 @@ function undoAction(){
 /* ---------------- PNG 書き出し ---------------- */
 const ROTATE_CHARS = new Set([..."ー―〜～…‥「」『』（）()［］[]｛｝{}＜＞<>"]);
 const SHIFT_CHARS = new Set([..."、。，．"]);
+/* ト書きを一覧と同じく左下の箱に折り返して描く。収まらない行は「…」で切る */
+function drawNotesPNG(ctx, notes, r, W, H){
+  if(!notes.length) return;
+  const fs = W*0.017, lh = fs*1.35, pad = fs*0.35;
+  ctx.font = fs + 'px "Hiragino Kaku Gothic ProN", sans-serif';
+  const maxW = r.w*NOTE_W*W - pad*2, indent = ctx.measureText("＊").width;
+  const lines = [];
+  notes.forEach(note => {
+    let cur = "＊", first = true;
+    for(const ch of [...note]){
+      const limit = maxW - (first ? 0 : indent);
+      if(ctx.measureText(cur + ch).width > limit){ lines.push({t:cur, ind:!first}); cur = ""; first = false; }
+      cur += ch;
+    }
+    lines.push({t:cur, ind:!first});
+  });
+  const maxLines = Math.max(1, Math.floor((r.h*NOTE_H*H - pad*2) / lh));
+  if(lines.length > maxLines){ lines.length = maxLines; lines[maxLines-1].t = lines[maxLines-1].t.slice(0, -1) + "…"; }
+  const boxW = Math.min(maxW, Math.max(...lines.map(l => ctx.measureText(l.t).width + (l.ind ? indent : 0)))) + pad*2;
+  const boxH = lines.length*lh + pad*2;
+  const x = (r.x + 0.012)*W, y = (r.y + r.h)*H - 0.008*W - boxH;
+  ctx.fillStyle = "rgba(255,255,255,.78)"; ctx.fillRect(x, y, boxW, boxH);
+  ctx.fillStyle = "#777"; ctx.textAlign = "left"; ctx.textBaseline = "top";
+  lines.forEach((l, i) => ctx.fillText(l.t, x + pad + (l.ind ? indent : 0), y + pad + i*lh));
+}
 /* フキダシ外形のパスを作る（thoughtは枠なしなので呼ばれない） */
 function traceBubblePath(ctx, type, cx, cy, rx, ry){
   ctx.beginPath();
-  if(type === "shout" || type === "flash"){
-    const n = type === "flash" ? 40 : 12;
-    const inner = type === "flash" ? 0.50 : 0.78;
+  if(type === "narration"){
+    ctx.rect(cx - rx, cy - ry, rx*2, ry*2);
+  }else if(type === "shout" || type === "flash" || type === "phone"){
+    const n = type === "flash" ? 40 : type === "phone" ? 30 : 12;
+    const inner = type === "flash" ? 0.50 : type === "phone" ? 0.90 : 0.78;
     for(let i = 0; i < 2*n; i++){
       const a = Math.PI*i/n - Math.PI/2, r = (i%2 ? inner : 1);
       const x = cx + rx*r*Math.cos(a), y = cy + ry*r*Math.sin(a);
@@ -1140,9 +1192,7 @@ function exportPagePNG(idx){
   // ト書き・フキダシ
   page.panels.forEach((panel, pi) => {
     const r = quadBBox(quads[Math.min(pi, quads.length-1)] || rectToQuad({x:.05,y:.05,w:.9,h:.9}));
-    ctx.font = '24px "Hiragino Kaku Gothic ProN", sans-serif';
-    ctx.fillStyle = "#888"; ctx.textAlign="left"; ctx.textBaseline="top";
-    panel.notes.forEach((note,ni)=> ctx.fillText("＊"+note, (r.x+0.015)*W, (r.y+0.012)*H + ni*30));
+    drawNotesPNG(ctx, panel.notes, r, W, H);
 
     let cursorX = r.x + r.w - 0.02;
     panel.texts.forEach(t => {
@@ -1393,9 +1443,8 @@ function convertScript(src){
     const b = importBubbles(line);
     if(b){
       b.bubbles.forEach(x => {
-        if(x.open === "『"){ // 原稿の『』は電話など。アプリでは叫びの記号なので普通の台詞に直す
-          out.push(x.speaker + "「" + x.body + "」");
-          notes.push("原稿では『』（電話など）");
+        if(x.open === "『"){ // 原稿の『』は電話など。アプリでは『』が叫びなので、電話の【】に直す
+          out.push(x.speaker + "【" + x.body + "】");
         }else if(x.open === "「"){
           out.push(x.speaker + "「" + x.body + "」");
         }else{
