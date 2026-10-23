@@ -1,0 +1,1498 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ネームプロト — 台本ライブ同期ネームツール</title>
+<style>
+  /* しっぽりアンチック（SIL OFL）：かな＝アンチック体・漢字＝ゴシック体の漫画セリフ用書体 */
+  @font-face{
+    font-family:"Shippori Antique";
+    src:url("ShipporiAntique-Regular.ttf") format("truetype");
+    font-display:swap;
+  }
+  :root{
+    --bg:#1e1f24; --panel:#26272e; --panel2:#2d2e36; --line:#3a3b44;
+    --text:#e8e8ec; --dim:#9a9ba6; --accent:#5b8cff; --paper:#ffffff;
+  }
+  *{box-sizing:border-box; margin:0; padding:0;}
+  html,body{height:100%;}
+  body{
+    background:var(--bg); color:var(--text);
+    font-family:"Hiragino Kaku Gothic ProN","Yu Gothic",sans-serif;
+    font-size:13px; overflow:hidden;
+  }
+  /* ---------- layout ---------- */
+  #app{display:flex; flex-direction:column; height:100%;}
+  #topbar{
+    display:flex; align-items:center; gap:10px; padding:8px 12px;
+    background:var(--panel); border-bottom:1px solid var(--line); flex-wrap:wrap;
+  }
+  #topbar .logo{font-weight:bold; letter-spacing:.05em; color:var(--accent);}
+  #title{
+    background:var(--panel2); border:1px solid var(--line); color:var(--text);
+    border-radius:6px; padding:5px 10px; width:180px; font-size:13px;
+  }
+  .btn{
+    background:var(--panel2); border:1px solid var(--line); color:var(--text);
+    border-radius:6px; padding:5px 12px; cursor:pointer; font-size:12px;
+  }
+  .btn:hover{border-color:var(--accent);}
+  select{
+    background:var(--panel2); border:1px solid var(--line); color:var(--text);
+    border-radius:6px; padding:5px 8px; font-size:12px; max-width:170px;
+  }
+  .btn.active{background:var(--accent); border-color:var(--accent); color:#fff;}
+  .seg{display:flex; border:1px solid var(--line); border-radius:6px; overflow:hidden;}
+  .seg button{
+    background:var(--panel2); border:none; color:var(--dim);
+    padding:5px 11px; cursor:pointer; font-size:12px;
+  }
+  .seg button.active{background:var(--accent); color:#fff;}
+  .spacer{flex:1;}
+  #main{display:flex; flex:1; min-height:0;}
+  /* ---------- script pane ---------- */
+  #scriptPane{
+    width:320px; min-width:220px; max-width:50vw;
+    display:flex; flex-direction:column; background:var(--panel);
+    border-right:1px solid var(--line);
+  }
+  #scriptPane header{
+    padding:8px 12px; color:var(--dim); font-size:11px;
+    display:flex; justify-content:space-between; align-items:center;
+  }
+  #scriptHint{padding:0 12px 8px; color:var(--dim); font-size:11px; line-height:1.7;}
+  #scriptHint code{
+    background:var(--panel2); padding:0 5px; border-radius:4px;
+    color:var(--text); font-family:inherit;
+  }
+  #script{
+    flex:1; resize:none; border:none; outline:none;
+    background:var(--panel); color:var(--text);
+    padding:10px 14px; font-size:13.5px; line-height:1.9;
+    font-family:"Hiragino Kaku Gothic ProN","Yu Gothic",sans-serif;
+  }
+  #dragbar{width:5px; cursor:col-resize; background:transparent;}
+  #dragbar:hover{background:var(--accent);}
+  /* ---------- pages overview ---------- */
+  #overview{
+    flex:1; overflow-y:auto; padding:24px;
+    direction:rtl; /* 右綴じ：右→左にページが流れる */
+  }
+  #grid{
+    display:grid; gap:18px 14px; direction:rtl;
+    grid-template-columns:repeat(var(--cols,2), 1fr);
+    max-width:calc(var(--cols,2) * 340px); margin:0 auto;
+  }
+  .pageWrap{direction:ltr;}
+  .pageNum{text-align:center; color:var(--dim); font-size:11px; margin-top:4px;}
+  .page{
+    position:relative; background:var(--paper); aspect-ratio:1/1.4142;
+    border-radius:2px; box-shadow:0 2px 10px rgba(0,0,0,.45);
+    cursor:pointer; overflow:hidden;
+  }
+  .page:hover{outline:2px solid var(--accent);}
+  .spacerCell{visibility:hidden;}
+  /* ---------- page inner ---------- */
+  .panelRect{
+    position:absolute; border:solid #111;
+    background:transparent;
+  }
+  .strokesCanvas{position:absolute; inset:0; width:100%; height:100%; pointer-events:none;}
+  .bubble{
+    position:absolute; background:rgba(255,255,255,.92);
+    border:solid #222; border-radius:45%/38%;
+    display:flex; align-items:center; justify-content:center;
+    writing-mode:vertical-rl; color:#111; text-align:start;
+    line-height:1.35; user-select:none; white-space:pre-wrap;
+    padding:1.2em 1em; /* 文字と枠の余白。折り返し行数の計算と連動 */
+    font-family:"Shippori Antique","Hiragino Kaku Gothic ProN","Yu Gothic",sans-serif;
+  }
+  /* フキダシの種類 */
+  .bubble.thought{ border:none; background:transparent; }
+  .bubble.shout, .bubble.flash{
+    border:none; background:transparent; font-weight:bold; z-index:0;
+  }
+  .bubbleHandle{
+    position:absolute; left:-7px; bottom:-7px; width:14px; height:14px;
+    background:var(--accent); border:2px solid #fff; border-radius:4px;
+    cursor:ns-resize; opacity:.35; writing-mode:horizontal-tb;
+  }
+  .bubble:hover .bubbleHandle{opacity:1;}
+  .bubble .speaker{
+    position:absolute; writing-mode:horizontal-tb;
+    top:-1.5em; right:0; font-size:.62em; color:#666;
+    background:rgba(255,255,255,.85); padding:0 3px; border-radius:3px;
+    white-space:nowrap;
+  }
+  .note{
+    position:absolute; color:#888; font-size:9px; line-height:1.4;
+    max-width:60%; pointer-events:none; white-space:pre-wrap;
+  }
+  /* ---------- editor overlay ---------- */
+  #editor{
+    position:fixed; inset:0; background:rgba(14,14,18,.92);
+    display:none; flex-direction:column; z-index:100;
+  }
+  #editor.open{display:flex;}
+  #editorBar{
+    display:flex; align-items:center; gap:8px; padding:8px 14px;
+    background:var(--panel); border-bottom:1px solid var(--line); flex-wrap:wrap;
+  }
+  #editorStage{
+    flex:1; display:flex; align-items:center; justify-content:center;
+    min-height:0; padding:16px; gap:16px;
+  }
+  .edPage.page{cursor:crosshair; box-shadow:0 4px 30px rgba(0,0,0,.7);}
+  .edPage .bubble{cursor:grab;}
+  .edPage .bubble:active{cursor:grabbing;}
+  .edPage .bubble:hover{outline:1.5px dashed var(--accent);}
+  .edPage .strokesCanvas{pointer-events:none;}
+  #edPageHolder{display:flex; gap:6px; align-items:center;}
+  .navBtn{
+    background:var(--panel2); border:1px solid var(--line); color:var(--text);
+    border-radius:8px; width:44px; height:64px; font-size:18px; cursor:pointer;
+  }
+  .navBtn:disabled{opacity:.25; cursor:default;}
+  #pageIndicator{color:var(--dim); min-width:70px; text-align:center;}
+  input[type=range]{accent-color:var(--accent); width:90px;}
+  .toolLabel{color:var(--dim); font-size:11px;}
+  #toast{
+    position:fixed; bottom:20px; left:50%; transform:translateX(-50%);
+    background:var(--accent); color:#fff; padding:8px 18px; border-radius:8px;
+    opacity:0; transition:opacity .25s; pointer-events:none; z-index:200;
+  }
+  #toast.show{opacity:1;}
+</style>
+</head>
+<body>
+<div id="app">
+  <div id="topbar">
+    <span class="logo">ネームプロト</span>
+    <select id="projSel" title="プロジェクト切り替え"></select>
+    <button class="btn" id="btnNewProj" title="新規プロジェクト">＋新規</button>
+    <button class="btn" id="btnDupProj" title="現在のプロジェクトを複製">複製</button>
+    <button class="btn" id="btnDelProj" title="現在のプロジェクトを削除">削除</button>
+    <input id="title" placeholder="作品タイトル">
+    <span class="toolLabel">用紙</span>
+    <select id="paperSel" title="級数の実寸換算に使う用紙サイズ">
+      <option value="B4">B4原稿 (257×364)</option>
+      <option value="A4">A4 (210×297)</option>
+      <option value="B5">B5仕上がり (182×257)</option>
+    </select>
+    <span class="toolLabel">列数</span>
+    <div class="seg" id="colSeg">
+      <button data-cols="1">1</button>
+      <button data-cols="2" class="active">2</button>
+      <button data-cols="3">3</button>
+      <button data-cols="4">4</button>
+    </div>
+    <span class="spacer"></span>
+    <button class="btn" id="btnSave" title="前回と同じファイルに上書き保存">保存</button>
+    <button class="btn" id="btnSaveAs" title="場所と名前を選んで保存">別名</button>
+    <button class="btn" id="btnLoad">読込</button>
+    <button class="btn" id="btnTxt">テキスト書き出し</button>
+    <input type="file" id="fileInput" accept=".json" hidden>
+  </div>
+  <div id="main">
+    <div id="scriptPane">
+      <header>
+        <span>台本エディタ</span>
+        <span id="stats"></span>
+      </header>
+      <div id="scriptHint">
+        <code>「…」</code>台詞 ／ <code>（…）</code>心の声 ／ <code>『…』</code>叫び ／ <code>((…))</code>フラッシュ<br>
+        空行＝コマ ／ <code>---</code>＝ページ ／ <code>*</code>ト書き ／ <code>◇</code>空きコマ<br>
+        行末 <code>@32</code>＝級数（標準20Q） ／ <code>@固</code>＝手動配置（消すと自動に戻る）
+      </div>
+      <textarea id="script" spellcheck="false" placeholder="ここに台本を書くと、右にネームが即時生成されます"></textarea>
+    </div>
+    <div id="dragbar"></div>
+    <div id="overview"><div id="grid"></div></div>
+  </div>
+</div>
+
+<!-- ページ編集オーバーレイ -->
+<div id="editor">
+  <div id="editorBar">
+    <button class="btn" id="btnClose">← 一覧へ (Esc)</button>
+    <span id="pageIndicator"></span>
+    <button class="btn" id="btnSpread">見開き</button>
+    <span class="spacer"></span>
+    <button class="btn tool" data-tool="split">✂ コマ割り</button>
+    <button class="btn tool active" data-tool="pen">ペン</button>
+    <button class="btn tool" data-tool="eraser">消しゴム</button>
+    <span class="toolLabel">太さ</span>
+    <input type="range" id="penSize" min="1" max="12" value="3">
+    <button class="btn" id="btnUndo">元に戻す (⌘Z)</button>
+    <button class="btn" id="btnOneFrame">1コマに結合</button>
+    <button class="btn" id="btnResetLayout">コマ割りリセット</button>
+    <span class="spacer"></span>
+    <button class="btn" id="btnPng">このページをPNG書き出し</button>
+  </div>
+  <div id="editorStage">
+    <!-- 右綴じ：進む＝左 -->
+    <button class="navBtn" id="btnNext" title="次のページ">◀</button>
+    <div id="edPageHolder"></div>
+    <button class="navBtn" id="btnPrev" title="前のページ">▶</button>
+  </div>
+</div>
+<div id="toast"></div>
+
+<script src="sample.js"></script>
+<script>
+"use strict";
+/* ================================================================
+   データモデル
+   台本テキストが唯一の原稿。パースしてページ構造を導出する。
+   手動調整（フキダシ位置）は content キーで保持し、再パース後も維持。
+================================================================ */
+/* 保存はプロジェクト単位。localStorage に
+   nemsproto-index …… {current, order:[id,...]}
+   nemsproto-p-<id> … プロジェクト本体（台本・描き込み・コマ割り・フキダシ調整の全部） */
+const LS_INDEX = "nemsproto-index";
+const LS_PREFIX = "nemsproto-p-";
+const LS_LEGACY = "nemsproto-v1"; // 旧単一保存からの移行元
+const PAPER_W_MM = {B4: 257, A4: 210, B5: 182}; // 級数→px換算に使う用紙幅
+
+function defaults(){
+  return {
+    title: "",
+    script: "",
+    cols: 2,
+    paper: "B4",   // 用紙プリセット
+    offsets: {},   // key -> {x,y} ページ内正規化座標(フキダシ中心)
+    bubbleBox: {}, // key -> {w,h} フキダシ手動リサイズ後の矩形（ページ比）
+    strokes: {},   // pageIdx -> [{tool,size,points:[[x,y],...]}] 正規化
+    layouts: {},   // pageIdx -> [poly,...] 手動コマ割り。poly=[[x,y],...] 3点以上
+  };
+}
+const state = defaults();
+let currentProjId = null;
+let pages = [];        // パース結果
+let editPageIdx = -1;  // 編集中ページ (-1=閉)
+const histories = {};  // pageIdx -> 取り消し履歴（実行時のみ）
+
+function loadIndex(){ try{ return JSON.parse(localStorage.getItem(LS_INDEX)); }catch(e){ return null; } }
+function saveIndex(idx){ try{ localStorage.setItem(LS_INDEX, JSON.stringify(idx)); }catch(e){} }
+function readProj(id){ try{ return JSON.parse(localStorage.getItem(LS_PREFIX+id)) || {}; }catch(e){ return {}; } }
+function resetStateTo(data){
+  Object.keys(state).forEach(k => delete state[k]);
+  Object.assign(state, defaults(), data || {});
+  Object.keys(histories).forEach(k => delete histories[k]);
+}
+function createProject(data){
+  const id = "p" + Date.now().toString(36) + Math.random().toString(36).slice(2,6);
+  try{ localStorage.setItem(LS_PREFIX+id, JSON.stringify(data)); }catch(e){}
+  const idx = loadIndex() || {current: id, order: []};
+  idx.order.push(id); idx.current = id;
+  saveIndex(idx);
+  return id;
+}
+
+/* ---------------- パース ---------------- */
+function parseScript(src){
+  const result = [];
+  let panels = [], texts = [], notes = [];
+  const seen = {};
+  let brokePage = false; // 直近がページ区切りで、新ページにまだ中身がない状態
+  const flushPanel = () => {
+    if(texts.length || notes.length){ panels.push({texts, notes}); texts=[]; notes=[]; }
+  };
+  const flushPage = (force) => {
+    flushPanel();
+    // 区切りで明示されたページは空でも作る（扉・見せゴマ等の台詞なしページ用）
+    if(panels.length || force){ result.push({panels}); panels=[]; }
+  };
+  for(const rawLine of src.split("\n")){
+    let line = rawLine.trim();
+    if(/^[-=＝ー―]{3,}$/.test(line)){ flushPage(true); brokePage = true; continue; }
+    if(line === ""){ flushPanel(); continue; }
+    brokePage = false;
+    if(/^[*＊]/.test(line)){ notes.push(line.replace(/^[*＊]\s*/,"")); continue; }
+    if(/^[◇□]$/.test(line)){ flushPanel(); panels.push({texts:[], notes:[]}); continue; } // 空きコマ
+    const t = parseTextLine(line);
+    const base = t.type + "|" + t.speaker + "|" + t.body; // 級数・固定は含めない＝変更しても手調整が残る
+    seen[base] = (seen[base]||0) + 1;
+    texts.push(Object.assign(t, {key: base + "#" + seen[base]}));
+  }
+  flushPage(brokePage); // 末尾が --- なら台詞なしの新ページを生かす
+  if(!result.length) result.push({panels:[]});
+  return result;
+}
+
+/* セリフ行1行のパース。括弧の種類でフキダシの種類が決まる。
+   「…」=台詞 ／（…）=心の声(直置き) ／『…』=叫び ／((…))=フラッシュ
+   行末 @24 で級数、@固 で手動配置の印（GUI操作でも自動追記される） */
+function parseTextLine(line){
+  let q = 20, pinned = false;
+  const qm = line.match(/^(.*?)[@＠](?:(\d{1,3})[QqＱ級]?)?(固)?\s*$/);
+  if(qm && qm[1].trim() && (qm[2] || qm[3])){
+    if(qm[2]) q = Math.max(8, Math.min(60, +qm[2]));
+    pinned = !!qm[3];
+    line = qm[1].trim();
+  }
+  let type = "speech", m;
+  if(m = line.match(/^(.{0,12}?)[（(]{2}(.+)[）)]{2}$/s)){ type = "flash"; }
+  else if(m = line.match(/^(.{0,12}?)『(.+)』$/s)){ type = "shout"; }
+  else if(m = line.match(/^(.{0,12}?)[（(](.+)[）)]$/s)){ type = "thought"; }
+  else if(m = line.match(/^(.{0,12}?)「(.+)」$/s)){ type = "speech"; }
+  const speaker = m ? m[1] : "";
+  const body = m ? m[2] : line;
+  return {speaker, body, q, type, pinned};
+}
+
+/* ---------------- コマ自動レイアウト ---------------- */
+/* 0..1 正規化の矩形を返す。3コマ以下は全段、4以上は2列(右→左)で段組み */
+function layoutPanels(n){
+  const M = 0.045, GAP = 0.018;
+  const rects = [];
+  if(n === 0) return rects;
+  let rows = [];
+  if(n <= 3){
+    for(let i=0;i<n;i++) rows.push(1);
+  }else{
+    let rem = n;
+    if(rem % 2 === 1){ rows.push(1); rem--; }
+    while(rem > 0){ rows.push(2); rem -= 2; }
+  }
+  const rowH = (1 - M*2 - GAP*(rows.length-1)) / rows.length;
+  let y = M, i = 0;
+  for(const cnt of rows){
+    const w = (1 - M*2 - GAP*(cnt-1)) / cnt;
+    for(let c=0;c<cnt;c++){
+      // 右→左
+      const x = 1 - M - w - c*(w+GAP);
+      rects.push({x, y, w, h:rowH});
+      i++;
+    }
+    y += rowH + GAP;
+  }
+  return rects;
+}
+
+/* ---------------- コマ形状（四角形）ヘルパー ----------------
+   quad = [tl,tr,br,bl] の正規化座標。傾き計算は物理比率(1:1.4142)で行う */
+const ASPECT = 1.4142;
+function rectToQuad(r){
+  return [[r.x,r.y],[r.x+r.w,r.y],[r.x+r.w,r.y+r.h],[r.x,r.y+r.h]];
+}
+function quadBBox(q){
+  const xs = q.map(p=>p[0]), ys = q.map(p=>p[1]);
+  const x = Math.min(...xs), y = Math.min(...ys);
+  return {x, y, w: Math.max(...xs)-x, h: Math.max(...ys)-y};
+}
+function pointInQuad(pt, q){ // 任意の多角形対応（名前は互換のため維持）
+  let inside = false;
+  const n = q.length;
+  for(let i=0, j=n-1; i<n; j=i++){
+    const [xi,yi] = q[i], [xj,yj] = q[j];
+    if((yi>pt[1]) !== (yj>pt[1]) && pt[0] < (xj-xi)*(pt[1]-yi)/(yj-yi)+xi) inside = !inside;
+  }
+  return inside;
+}
+function polyArea(poly){ // 物理座標系での面積（符号なし）
+  let s = 0;
+  const n = poly.length;
+  for(let i=0, j=n-1; i<n; j=i++){
+    s += (poly[j][0]*poly[i][1]*ASPECT - poly[i][0]*poly[j][1]*ASPECT);
+  }
+  return Math.abs(s/2);
+}
+/* 手動コマ割りがあればそれを、なければ台本のコマ数から自動生成 */
+function pageQuads(pageIdx, page){
+  const manual = state.layouts[pageIdx];
+  if(manual && manual.length) return orderQuads(manual); // 保存済みも常に読み順で
+
+  // 空ページも1枠として描画し、コマ割りの起点にできるようにする
+  return layoutPanels(Math.max(1, page.panels.length)).map(rectToQuad);
+}
+/* 読み順の決定：XYカット（再帰分割）
+   まず横の切れ目で上下の段に分け（上から）、切れなければ縦の切れ目で
+   列に分ける（右から）。右の縦長大ゴマ→左の2段、のような構成も正しく
+   「右の列を読み切ってから左へ」の順になる */
+function orderQuads(quads){
+  const items = quads.map(q => ({q, b: quadBBox(q)}));
+  const out = [];
+  xyCut(items, out);
+  return out.map(it => it.q);
+}
+function gapPartition(items, span){
+  // 区間が重ならない切れ目でグループ分け。切れ目がなければ1グループ
+  const sorted = [...items].sort((a,b)=> span(a)[0]-span(b)[0]);
+  const groups = [];
+  for(const it of sorted){
+    const [s,e] = span(it);
+    const g = groups[groups.length-1];
+    if(g && s < g.max - 0.003){ g.items.push(it); g.max = Math.max(g.max, e); }
+    else groups.push({min:s, max:e, items:[it]});
+  }
+  return groups;
+}
+function xyCut(items, out){
+  if(items.length <= 1){ items.forEach(it=> out.push(it)); return; }
+  const bandsH = gapPartition(items, it => [it.b.y, it.b.y+it.b.h]);
+  if(bandsH.length > 1){
+    bandsH.sort((A,B)=> A.min-B.min);           // 上の段から
+    bandsH.forEach(bd => xyCut(bd.items, out));
+    return;
+  }
+  const colsV = gapPartition(items, it => [it.b.x, it.b.x+it.b.w]);
+  if(colsV.length > 1){
+    colsV.sort((A,B)=> B.min-A.min);            // 右の列から
+    colsV.forEach(bd => xyCut(bd.items, out));
+    return;
+  }
+  // 斜め割り等で分離できない場合：中心の帯グルーピングで近似
+  const sorted = [...items].sort((a,b)=> (a.b.y+a.b.h/2)-(b.b.y+b.b.h/2));
+  const bands = [];
+  for(const it of sorted){
+    const cy = it.b.y+it.b.h/2;
+    const band = bands.find(bd => Math.abs(bd.cy-cy) < 0.06);
+    if(band) band.items.push(it);
+    else bands.push({cy, items:[it]});
+  }
+  for(const bd of bands){
+    bd.items.sort((a,b)=> (b.b.x+b.b.w/2)-(a.b.x+a.b.w/2));
+    bd.items.forEach(it=> out.push(it));
+  }
+}
+/* 描いた線(a→b)を無限直線として多角形を2分割（半平面クリップ）。
+   斜め・角かすめ（三角コマ化）も自由。分割線に沿ってコマ間の白を空ける */
+function splitPolyByLine(poly, a, b){
+  const ph = p => [p[0], p[1]*ASPECT];
+  const nm = p => [p[0], p[1]/ASPECT];
+  const p0 = ph(a), p1 = ph(b);
+  const d = [p1[0]-p0[0], p1[1]-p0[1]];
+  const len = Math.hypot(d[0], d[1]);
+  if(len < 1e-9) return null;
+  const nrm = [-d[1]/len, d[0]/len]; // 分割線の単位法線
+  const side = v => {
+    const q = ph(v);
+    return (q[0]-p0[0])*nrm[0] + (q[1]-p0[1])*nrm[1];
+  };
+  const A = [], B = [];           // 物理座標で構築
+  const cutA = [], cutB = [];     // 分割線上に生じた頂点（後で白を空ける）
+  const n = poly.length;
+  for(let i=0; i<n; i++){
+    const vi = poly[i], vj = poly[(i+1)%n];
+    let si = side(vi), sj = side(vj);
+    if(Math.abs(si) < 1e-9) si = 1e-9;
+    if(Math.abs(sj) < 1e-9) sj = 1e-9;
+    const pvi = ph(vi);
+    (si > 0 ? A : B).push(pvi);
+    if((si > 0) !== (sj > 0)){
+      const t = si / (si - sj);
+      const pvj = ph(vj);
+      const X = [pvi[0]+(pvj[0]-pvi[0])*t, pvi[1]+(pvj[1]-pvi[1])*t];
+      A.push(X.slice()); cutA.push(A[A.length-1]);
+      B.push(X.slice()); cutB.push(B[B.length-1]);
+    }
+  }
+  if(A.length < 3 || B.length < 3) return null;
+  const g = 0.006; // コマ間の白の半分（物理座標）
+  cutA.forEach(pt => { pt[0] += nrm[0]*g; pt[1] += nrm[1]*g; });
+  cutB.forEach(pt => { pt[0] -= nrm[0]*g; pt[1] -= nrm[1]*g; });
+  const outA = A.map(nm), outB = B.map(nm);
+  // 線が角をかすめただけの極小片は分割不成立とする
+  if(polyArea(outA) < 0.006 || polyArea(outB) < 0.006) return null;
+  return [outA, outB];
+}
+/* 線分がコマの内部を通っているか（線分上をサンプリング） */
+function segmentCrossesPoly(a, b, poly){
+  for(let i=0; i<=40; i++){
+    const t = i/40;
+    if(pointInQuad([a[0]+(b[0]-a[0])*t, a[1]+(b[1]-a[1])*t], poly)) return true;
+  }
+  return false;
+}
+
+/* ---------------- 文節区切りと折り返し ----------------
+   Intl.Segmenter(単語分解)に、助詞・助動詞・句読点を前の語へ吸着させる
+   ヒューリスティックを重ねて文節相当のかたまりを作り、その単位で折り返す */
+const SEG = ("Segmenter" in Intl) ? new Intl.Segmenter("ja", {granularity:"word"}) : null;
+const PARTICLES = new Set((
+  "が を に は で と も の へ や か ね よ な ぞ ぜ ん だ た て ば ど " +
+  "です ます ない たい から まで だけ ほど など なら たら って じゃ ちゃ けど のに ので " +
+  "まし でし だろ たり れる られ せる させ よう そう かも こそ には とは でも いる ある する なる れば " +
+  "られる させる ました でした ません ながら ばかり くらい ぐらい なきゃ"
+).split(/\s+/));
+const PUNCT_RE = /^[、。，．！？!?…‥ー〜っ）」』】\s]+$/;
+const HIRA_RE = /^[぀-ゟー]+$/;
+function toChunks(text){
+  if(!text) return [""];
+  if(!SEG) return [...text];
+  const chunks = [];
+  let endsParticle = false; // 直前チャンクが助詞・助動詞で終わっているか
+  for(const s of SEG.segment(text)){
+    const t = s.segment;
+    if(!chunks.length){ chunks.push(t); endsParticle = false; continue; }
+    if(PUNCT_RE.test(t)){ chunks[chunks.length-1] += t; continue; }
+    if(HIRA_RE.test(t) && PARTICLES.has(t)){
+      chunks[chunks.length-1] += t; endsParticle = true; continue;
+    }
+    if(HIRA_RE.test(t) && !endsParticle){
+      // Segmenterが語を割った断片（め|くら 等）は前の語の続きとして結合
+      chunks[chunks.length-1] += t; continue;
+    }
+    chunks.push(t); endsParticle = false;
+  }
+  return chunks;
+}
+function wrapChunks(chunks, maxRows){
+  const L = s => [...s].length;
+  const lines = [];
+  let cur = "";
+  for(const c of chunks){
+    if(L(cur) + L(c) <= maxRows){ cur += c; continue; }
+    if(L(c) <= maxRows){ if(cur) lines.push(cur); cur = c; continue; }
+    let rest = c; // 1文節がmaxRowsを超える場合だけ文字で強制分割
+    while(L(rest) > 0){
+      const space = maxRows - L(cur);
+      if(space <= 0){ lines.push(cur); cur = ""; continue; }
+      cur += [...rest].slice(0, space).join("");
+      rest = [...rest].slice(space).join("");
+      // 行頭禁則：次行の頭に来る句読点類は前の行へぶら下げる
+      let rc = [...rest];
+      while(rc.length && PUNCT_RE.test(rc[0])){ cur += rc.shift(); }
+      rest = rc.join("");
+      if(L(cur) >= maxRows){ lines.push(cur); cur = ""; }
+    }
+  }
+  if(cur) lines.push(cur);
+  return lines.length ? lines : [""];
+}
+
+/* ---------------- フキダシ寸法 ----------------
+   級数(q)は20Qを標準としてフォントサイズに反映（B5誌面換算の目安）。
+   手動リサイズ(box={w,h} ページ比)があれば、その矩形に収まる最大の級数を
+   二分探索で求める。折り返しは常に文節単位 */
+/* 級数(Q)→px：1Q=0.25mm を用紙幅で換算。用紙が大きいほど同じQは相対的に小さくなる */
+function baseFontPx(pagePx, q){
+  return pagePx * ((q || 20) * 0.25) / (PAPER_W_MM[state.paper] || 257);
+}
+/* フキダシ種類ごとの余白（fs倍）とCSSパディング。トゲ系はトゲを避けて広めに */
+const BUBBLE_PAD = {
+  speech:  {h:2.6, w:2.2, css:"1.2em 1em"},
+  thought: {h:1.4, w:1.2, css:".6em .5em"},
+  shout:   {h:3.4, w:3.2, css:"1.6em 1.5em"},
+  flash:   {h:4.6, w:4.2, css:"2.2em 2em"}, // ウニフラは谷が深いので余白広め
+};
+/* トゲ形状（叫び・フラッシュ用）のポリゴン点列を 0-100 座標で生成 */
+function starPts(n, inner){
+  const pts = [];
+  for(let i=0; i<2*n; i++){
+    const a = Math.PI*i/n - Math.PI/2, r = (i%2 ? inner : 1) * 50;
+    pts.push((50 + r*Math.cos(a)).toFixed(1) + "," + (50 + r*Math.sin(a)).toFixed(1));
+  }
+  return pts.join(" ");
+}
+const SHOUT_PTS = starPts(12, 0.78); // 叫び：大ぶりのトゲの爆発型
+const FLASH_PTS = starPts(40, 0.50); // フラッシュ：長い針のウニフラッシュ
+
+function bubbleMetrics(body, pagePx, panelHFrac, q, box, type){
+  const pad = BUBBLE_PAD[type] || BUBBLE_PAD.speech;
+  const fsBase = baseFontPx(pagePx, q);
+  const pageH = pagePx * 1.4142;
+  const chunks = toChunks(body.replace(/\n/g,""));
+  let fs, maxRows;
+  if(box && box.h){
+    const H = box.h * pageH;
+    const W = (box.w || 0) * pagePx;
+    const fits = f => {
+      const r = Math.min(13, Math.floor((H - f*pad.h) / (f*1.35)));
+      if(r < 1) return false;
+      if(!(W > 0)) return true;
+      return wrapChunks(chunks, r).length * f * 1.55 + f*pad.w <= W;
+    };
+    let lo = fsBase*0.4, hi = fsBase*2.6;
+    for(let i=0; i<24; i++){ const m=(lo+hi)/2; fits(m) ? lo=m : hi=m; }
+    fs = Math.max(fsBase*0.55, Math.min(fsBase*2.2, lo));
+    maxRows = Math.max(1, Math.min(13, Math.floor((H - fs*pad.h) / (fs*1.35))));
+  }else{
+    fs = fsBase;
+    const panelHpx = (panelHFrac || 0.3) * pageH;
+    maxRows = Math.max(4, Math.min(13, Math.floor((panelHpx - fs*2.4) / (fs*1.35))));
+  }
+  // 折り返し。行数が増えない範囲で1行の上限を詰め、行ごとの文字数を均等化
+  let lines = wrapChunks(chunks, maxRows);
+  for(let r = maxRows-1; r >= 2; r--){
+    const l2 = wrapChunks(chunks, r);
+    if(l2.length > lines.length) break;
+    lines = l2;
+  }
+  const cols = lines.length;
+  const rows = Math.max(1, ...lines.map(l => [...l].length));
+  const w = cols * fs * 1.55 + fs*pad.w;
+  const h = rows * fs * 1.35 + fs*pad.h;
+  return {fs, w, h, rows, cols, lines};
+}
+
+/* ---------------- ページ描画（一覧・編集で共用） ---------------- */
+function renderPageInto(el, page, pageIdx, interactive){
+  el.innerHTML = "";
+  const pagePx = el.clientWidth || 300;
+  const H = pagePx * 1.4142;
+  const bw = Math.max(1, pagePx * 0.006); // コマ枠線
+  const quads = pageQuads(pageIdx, page);
+
+  // コマ枠（SVGポリゴン：斜めコマ対応）
+  const svgNS = "http://www.w3.org/2000/svg";
+  const svg = document.createElementNS(svgNS, "svg");
+  svg.setAttribute("viewBox", "0 0 1000 1414");
+  svg.setAttribute("preserveAspectRatio", "none");
+  svg.style.cssText = "position:absolute;inset:0;width:100%;height:100%;pointer-events:none;";
+  quads.forEach(q => {
+    const poly = document.createElementNS(svgNS, "polygon");
+    poly.setAttribute("points", q.map(p => (p[0]*1000).toFixed(1)+","+(p[1]*1414).toFixed(1)).join(" "));
+    poly.setAttribute("fill", "none");
+    poly.setAttribute("stroke", "#111");
+    poly.setAttribute("stroke-width", (bw/pagePx*1000).toFixed(1));
+    svg.appendChild(poly);
+  });
+  el.appendChild(svg);
+
+  // ラフ描画レイヤー（フキダシの下）
+  const cv = document.createElement("canvas");
+  cv.className = "strokesCanvas";
+  cv.width = Math.round(pagePx * devicePixelRatio);
+  cv.height = Math.round(H * devicePixelRatio);
+  el.appendChild(cv);
+  drawStrokes(cv, pageIdx);
+
+  page.panels.forEach((panel, pi) => {
+    // 手動コマ割りがコマ数より少ない時は、余った台本コマを最後のコマへ
+    const q = quads[Math.min(pi, quads.length-1)] || rectToQuad({x:.05,y:.05,w:.9,h:.9});
+    const r = quadBBox(q);
+
+    // ト書き
+    panel.notes.forEach((note, ni) => {
+      const nd = document.createElement("div");
+      nd.className = "note";
+      nd.textContent = note;
+      nd.style.left = ((r.x + 0.015)*100)+"%";
+      nd.style.top  = ((r.y + 0.012)*100 + ni*4)+"%";
+      nd.style.fontSize = (pagePx*0.019)+"px";
+      el.appendChild(nd);
+    });
+
+    // フキダシ（右から配置）
+    let cursorX = r.x + r.w - 0.02;
+    panel.texts.forEach((t) => {
+      // 手動配置(@固)の行だけ、記憶した位置・サイズを適用する
+      const box = t.pinned ? state.bubbleBox[t.key] : null;
+      const m = bubbleMetrics(t.body, pagePx, r.h, t.q, box, t.type);
+      const {fs, w, h} = m;
+      const wN = w/pagePx, hN = h/H;
+      let cx, cy;
+      const off = t.pinned ? state.offsets[t.key] : null;
+      if(off){ cx = off.x; cy = off.y; }
+      else{
+        cx = cursorX - wN/2;
+        cy = r.y + 0.025 + hN/2;
+        if(cx - wN/2 < r.x){ cx = r.x + 0.02 + wN/2; } // はみ出しは左端に寄せる
+      }
+      cursorX = cx - wN/2 - 0.015;
+
+      const b = document.createElement("div");
+      b.className = "bubble " + (t.type || "speech");
+      b.dataset.key = t.key;
+      b.dataset.body = t.body;
+      b.dataset.q = t.q || 20;
+      b.dataset.type = t.type || "speech";
+      b.style.width = w+"px"; b.style.height = h+"px";
+      b.style.left = (cx*100)+"%"; b.style.top = (cy*100)+"%";
+      b.style.transform = "translate(-50%,-50%)";
+      b.style.fontSize = fs+"px";
+      b.style.padding = (BUBBLE_PAD[t.type] || BUBBLE_PAD.speech).css;
+      b.textContent = m.lines.join("\n"); // 文節折り返し済みの行で表示（子要素の追加より先）
+      if(t.type === "shout" || t.type === "flash"){
+        const bs = document.createElementNS(svgNS, "svg");
+        bs.setAttribute("viewBox", "0 0 100 100");
+        bs.setAttribute("preserveAspectRatio", "none");
+        bs.style.cssText = "position:absolute;inset:0;width:100%;height:100%;z-index:-1;overflow:visible;";
+        const poly = document.createElementNS(svgNS, "polygon");
+        poly.setAttribute("points", t.type === "shout" ? SHOUT_PTS : FLASH_PTS);
+        poly.setAttribute("fill", "#fff");
+        poly.setAttribute("stroke", "#222");
+        poly.setAttribute("stroke-width", t.type === "shout" ? Math.max(1.5, pagePx*0.006) : Math.max(1, pagePx*0.003));
+        poly.setAttribute("vector-effect", "non-scaling-stroke");
+        bs.appendChild(poly);
+        b.appendChild(bs);
+      }else if(t.type !== "thought"){
+        b.style.borderWidth = Math.max(1, pagePx*0.004)+"px";
+      }
+      if(t.speaker){
+        const s = document.createElement("span");
+        s.className = "speaker"; s.textContent = t.speaker;
+        b.appendChild(s);
+      }
+      if(interactive){
+        const hd = document.createElement("span");
+        hd.className = "bubbleHandle";
+        b.appendChild(hd);
+      }
+      el.appendChild(b);
+    });
+  });
+
+  if(interactive) attachEditorEvents(el, cv, pageIdx);
+}
+
+function drawStrokes(cv, pageIdx, previewLine){
+  const ctx = cv.getContext("2d");
+  ctx.clearRect(0,0,cv.width,cv.height);
+  ctx.lineCap = "round"; ctx.lineJoin = "round";
+  ctx.strokeStyle = "#2a2a35";
+  const W = cv.width, H = cv.height;
+  for(const s of (state.strokes[pageIdx]||[])){
+    ctx.lineWidth = s.size * (W/560);
+    ctx.beginPath();
+    s.points.forEach((p,i)=> i? ctx.lineTo(p[0]*W, p[1]*H) : ctx.moveTo(p[0]*W, p[1]*H));
+    ctx.stroke();
+  }
+  if(previewLine){ // コマ割りツールのガイド線
+    const {a,b} = previewLine;
+    ctx.save();
+    ctx.strokeStyle = "#5b8cff"; ctx.lineWidth = Math.max(2, W/400);
+    ctx.setLineDash([10,7]);
+    ctx.beginPath();
+    ctx.moveTo(a[0]*W, a[1]*H); ctx.lineTo(b[0]*W, b[1]*H);
+    ctx.stroke();
+    ctx.restore();
+  }
+}
+
+/* ---------------- 一覧表示 ---------------- */
+const grid = document.getElementById("grid");
+function renderOverview(){
+  grid.style.setProperty("--cols", state.cols);
+  grid.innerHTML = "";
+  // 右綴じ：2列時はページ1を左側に置くためスペーサーを入れる
+  if(state.cols === 2){
+    const sp = document.createElement("div");
+    sp.className = "spacerCell pageWrap";
+    grid.appendChild(sp);
+  }
+  pages.forEach((page, i) => {
+    const wrap = document.createElement("div");
+    wrap.className = "pageWrap";
+    const el = document.createElement("div");
+    el.className = "page";
+    el.addEventListener("click", ()=> openEditor(i));
+    const num = document.createElement("div");
+    num.className = "pageNum"; num.textContent = "p." + (i+1);
+    wrap.appendChild(el); wrap.appendChild(num);
+    grid.appendChild(wrap);
+  });
+  // clientWidth 確定後に描画
+  requestAnimationFrame(()=>{
+    [...grid.querySelectorAll(".page")].forEach((el, i)=> renderPageInto(el, pages[i], i, false));
+  });
+  const nT = pages.reduce((a,p)=>a+p.panels.reduce((b,pn)=>b+pn.texts.length,0),0);
+  document.getElementById("stats").textContent = pages.length + "ページ / " + nT + "セリフ";
+}
+
+/* ---------------- 編集オーバーレイ ---------------- */
+const editor = document.getElementById("editor");
+const edHolder = document.getElementById("edPageHolder");
+let tool = "pen";
+
+function openEditor(idx){
+  editPageIdx = idx;
+  editor.classList.add("open");
+  renderEditor();
+}
+function closeEditor(){
+  editPageIdx = -1;
+  editor.classList.remove("open");
+  renderOverview();
+}
+let spreadMode = false;
+/* 表示すべきページ番号列（右綴じ：奇数ページ=左、偶数ページ=右。p1は単独） */
+function spreadOf(idx){
+  if(!spreadMode) return [idx];
+  if(idx === 0) return [0];
+  const right = (idx % 2 === 1) ? idx : idx - 1; // 0基準で奇数idx＝偶数ページ＝右側
+  return (right + 1 < pages.length) ? [right, right + 1] : [right];
+}
+function renderEditor(){
+  if(editPageIdx < 0) return;
+  if(editPageIdx >= pages.length) editPageIdx = pages.length - 1;
+  const idxs = spreadOf(editPageIdx);
+  const stage = document.getElementById("editorStage");
+  const stageH = stage.clientHeight - 32;
+  const stageW = stage.clientWidth - 160;
+  const perW = (stageW - (idxs.length - 1) * 6) / idxs.length;
+  const pageH = Math.min(stageH, perW * 1.4142);
+  const pageW = pageH / 1.4142;
+  edHolder.innerHTML = "";
+  // 右綴じ：DOMの先頭＝左側なので、ページ順を逆にして並べる
+  [...idxs].reverse().forEach(idx => {
+    const el = document.createElement("div");
+    el.className = "page edPage";
+    el.style.width = pageW+"px"; el.style.height = pageH+"px";
+    edHolder.appendChild(el);
+    renderPageInto(el, pages[idx], idx, true);
+  });
+  const label = idxs.length > 1
+    ? "p." + (idxs[0]+1) + "-" + (idxs[idxs.length-1]+1)
+    : "p." + (editPageIdx+1);
+  document.getElementById("pageIndicator").textContent = label + " / " + pages.length;
+  document.getElementById("btnPrev").disabled = idxs[0] === 0;
+  document.getElementById("btnNext").disabled = idxs[idxs.length-1] >= pages.length - 1;
+}
+
+function pushHistory(pageIdx, act){
+  (histories[pageIdx] ||= []).push(act);
+}
+
+function attachEditorEvents(el, cv, pageIdx){
+  let drawing = null, draggingBubble = null, splitDrag = null, resizingBubble = null;
+  const rect = () => el.getBoundingClientRect();
+  const norm = (e) => {
+    const r = rect();
+    return [(e.clientX - r.left)/r.width, (e.clientY - r.top)/r.height];
+  };
+
+  el.addEventListener("pointerdown", (e) => {
+    editPageIdx = pageIdx; // 見開き時：触ったページが取り消し・書き出しの対象
+    if(e.target.classList && e.target.classList.contains("bubbleHandle")){
+      // フキダシのリサイズ：引いた矩形の形に級数と行組みが追従する2次元ドラッグ
+      e.preventDefault();
+      const bubble = e.target.closest(".bubble");
+      const key = bubble.dataset.key;
+      pushHistory(pageIdx, {kind:"bubbleBox", key, prev: state.bubbleBox[key]});
+      const r = rect();
+      const br = bubble.getBoundingClientRect();
+      resizingBubble = {
+        key, bubble,
+        q: +bubble.dataset.q || 20,
+        type: bubble.dataset.type || "speech",
+        body: bubble.dataset.body || "",
+        centerX: br.left + br.width/2,  // 中心固定で対称に伸縮
+        centerY: br.top + br.height/2,
+        pageWpx: r.width,
+        pageHpx: r.height,
+      };
+      el.setPointerCapture(e.pointerId);
+      return;
+    }
+    const bubble = e.target.closest(".bubble");
+    if(bubble){
+      // フキダシのドラッグ移動
+      e.preventDefault();
+      const key = bubble.dataset.key;
+      const r = rect();
+      const br = bubble.getBoundingClientRect();
+      const grabDx = e.clientX - (br.left + br.width/2);
+      const grabDy = e.clientY - (br.top + br.height/2);
+      draggingBubble = {key, bubble, grabDx, grabDy, r};
+      el.setPointerCapture(e.pointerId);
+      return;
+    }
+    e.preventDefault();
+    const p = norm(e);
+    if(tool === "split"){
+      splitDrag = {a:p, b:p};
+    }else if(tool === "pen"){
+      pushHistory(pageIdx, {kind:"strokes", prev:(state.strokes[pageIdx]||[]).slice()});
+      drawing = {tool:"pen", size:+document.getElementById("penSize").value, points:[p]};
+      (state.strokes[pageIdx] ||= []).push(drawing);
+    }else{
+      pushHistory(pageIdx, {kind:"strokes", prev:(state.strokes[pageIdx]||[]).slice()});
+      eraseAt(pageIdx, p);
+      drawing = {erasing:true};
+    }
+    el.setPointerCapture(e.pointerId);
+    drawStrokes(cv, pageIdx, splitDrag);
+  });
+
+  el.addEventListener("pointermove", (e) => {
+    if(resizingBubble){
+      const {key, bubble, q, type, body, centerX, centerY, pageWpx, pageHpx} = resizingBubble;
+      const fsBase = baseFontPx(pageWpx, q);
+      const box = {
+        w: Math.max(fsBase*3.2, 2*(centerX - e.clientX)) / pageWpx, // ハンドルは左下
+        h: Math.max(fsBase*3.5, 2*(e.clientY - centerY)) / pageHpx,
+      };
+      state.bubbleBox[key] = box;
+      const m = bubbleMetrics(body, pageWpx, 0, q, box, type);
+      bubble.style.fontSize = m.fs + "px";
+      bubble.style.width  = m.w + "px";
+      bubble.style.height = m.h + "px";
+      bubble.firstChild.nodeValue = m.lines.join("\n"); // 行組みもライブ更新
+      return;
+    }
+    if(draggingBubble){
+      const {key, bubble, grabDx, grabDy, r} = draggingBubble;
+      const cx = (e.clientX - grabDx - r.left)/r.width;
+      const cy = (e.clientY - grabDy - r.top)/r.height;
+      state.offsets[key] = {x: Math.min(.98,Math.max(.02,cx)), y: Math.min(.98,Math.max(.02,cy))};
+      bubble.style.left = (state.offsets[key].x*100)+"%";
+      bubble.style.top = (state.offsets[key].y*100)+"%";
+      return;
+    }
+    if(splitDrag){
+      splitDrag.b = norm(e);
+      drawStrokes(cv, pageIdx, splitDrag);
+      return;
+    }
+    if(!drawing) return;
+    const p = norm(e);
+    if(drawing.erasing){ eraseAt(pageIdx, p); }
+    else{ drawing.points.push(p); }
+    drawStrokes(cv, pageIdx);
+  });
+
+  const up = () => {
+    if(resizingBubble){
+      const k = resizingBubble.key;
+      resizingBubble = null; persist();
+      markPinned(k); // 台本に @固 を反映（既に固定済みなら何もしない）
+      renderEditor();
+    }
+    if(draggingBubble){
+      const k = draggingBubble.key;
+      draggingBubble = null; persist();
+      markPinned(k);
+    }
+    if(drawing){ drawing = null; persist(); }
+    if(splitDrag){ const seg = splitDrag; splitDrag = null; applySplit(pageIdx, seg); }
+  };
+  el.addEventListener("pointerup", up);
+  el.addEventListener("pointercancel", up);
+}
+
+/* コマ割り適用：引いた線が内部を通る全コマを、その直線で一括裁断 */
+function applySplit(pageIdx, seg){
+  const {a, b} = seg;
+  if(Math.hypot(b[0]-a[0], (b[1]-a[1])*ASPECT) < 0.05){ renderEditor(); return; }
+  const polys = pageQuads(pageIdx, pages[pageIdx]).map(q => q.map(p => p.slice()));
+  const out = [];
+  let didSplit = false;
+  for(const poly of polys){
+    if(segmentCrossesPoly(a, b, poly)){
+      const parts = splitPolyByLine(poly, a, b);
+      if(parts){ out.push(...parts); didSplit = true; continue; }
+    }
+    out.push(poly);
+  }
+  if(!didSplit){ toast("コマの中を横切るように線を引いてください"); renderEditor(); return; }
+  pushHistory(pageIdx, {kind:"layout",
+    prev: state.layouts[pageIdx] ? state.layouts[pageIdx].map(q=>q.map(p=>p.slice())) : null});
+  state.layouts[pageIdx] = orderQuads(out);
+  persist();
+  reflectPanelsInScript(pageIdx, out.length); // 増えたコマを台本に ◇ として反映
+  renderEditor();
+}
+
+/* ---------------- GUI操作の台本への書き戻し ---------------- */
+function setScript(text){
+  scriptEl.value = text;
+  state.script = text;
+  pages = parseScript(text);
+  renderOverview();
+  if(editPageIdx >= 0) renderEditor();
+  persist();
+}
+/* コマ割りで台本よりコマが増えたら、そのページ末尾に空きコマ記号◇を追記 */
+function reflectPanelsInScript(pageIdx, quadCount){
+  const need = quadCount - pages[pageIdx].panels.length;
+  if(need <= 0) return;
+  const lines = state.script.split("\n");
+  let p = 0, end = -1;
+  for(let i = 0; i < lines.length; i++){
+    if(/^[-=＝ー―]{3,}$/.test(lines[i].trim())){
+      if(p === pageIdx){ end = i; break; }
+      p++;
+    }
+  }
+  if(end < 0){
+    if(pageIdx === p) end = lines.length;
+    else return; // 対応するページ区切りが見つからない
+  }
+  const add = [];
+  for(let k = 0; k < need; k++) add.push("", "◇");
+  lines.splice(end, 0, ...add);
+  setScript(lines.join("\n"));
+}
+/* フキダシを動かした行に @固 を追記（台本から消せば自動配置に戻る） */
+function findLineIndexForKey(key){
+  const lines = state.script.split("\n");
+  const seen = {};
+  for(let i = 0; i < lines.length; i++){
+    const line = lines[i].trim();
+    if(!line || /^[-=＝ー―]{3,}$/.test(line) || /^[*＊]/.test(line) || /^[◇□]$/.test(line)) continue;
+    const t = parseTextLine(line);
+    const base = t.type + "|" + t.speaker + "|" + t.body;
+    seen[base] = (seen[base]||0) + 1;
+    if(base + "#" + seen[base] === key) return i;
+  }
+  return -1;
+}
+function markPinned(key){
+  const i = findLineIndexForKey(key);
+  if(i < 0) return;
+  const lines = state.script.split("\n");
+  const raw = lines[i];
+  if(/固\s*$/.test(raw)) return; // 既に固定済み
+  const m = raw.match(/^(.*[@＠]\d{1,3}[QqＱ級]?)\s*$/);
+  lines[i] = m ? m[1] + "固" : raw.replace(/\s+$/,"") + "@固";
+  setScript(lines.join("\n"));
+}
+
+function eraseAt(pageIdx, p){
+  const R = 0.02;
+  const arr = state.strokes[pageIdx] || [];
+  state.strokes[pageIdx] = arr.filter(s =>
+    !s.points.some(q => Math.hypot(q[0]-p[0], (q[1]-p[1])*1.4142) < R)
+  );
+}
+function undoAction(){
+  if(editPageIdx < 0) return;
+  const act = (histories[editPageIdx]||[]).pop();
+  if(!act) return;
+  if(act.kind === "strokes"){ state.strokes[editPageIdx] = act.prev; }
+  else if(act.kind === "layout"){
+    if(act.prev) state.layouts[editPageIdx] = act.prev;
+    else delete state.layouts[editPageIdx];
+  }
+  else if(act.kind === "bubbleBox"){
+    if(act.prev !== undefined) state.bubbleBox[act.key] = act.prev;
+    else delete state.bubbleBox[act.key];
+  }
+  persist(); renderEditor();
+}
+
+/* ---------------- PNG 書き出し ---------------- */
+const ROTATE_CHARS = new Set([..."ー―〜～…‥「」『』（）()［］[]｛｝{}＜＞<>"]);
+const SHIFT_CHARS = new Set([..."、。，．"]);
+/* フキダシ外形のパスを作る（thoughtは枠なしなので呼ばれない） */
+function traceBubblePath(ctx, type, cx, cy, rx, ry){
+  ctx.beginPath();
+  if(type === "shout" || type === "flash"){
+    const n = type === "flash" ? 40 : 12;
+    const inner = type === "flash" ? 0.50 : 0.78;
+    for(let i = 0; i < 2*n; i++){
+      const a = Math.PI*i/n - Math.PI/2, r = (i%2 ? inner : 1);
+      const x = cx + rx*r*Math.cos(a), y = cy + ry*r*Math.sin(a);
+      i ? ctx.lineTo(x,y) : ctx.moveTo(x,y);
+    }
+    ctx.closePath();
+  }else{
+    ctx.ellipse(cx, cy, rx, ry, 0, 0, Math.PI*2);
+  }
+}
+function drawVText(ctx, lines, cxPx, topPx, fs, bold){
+  // 縦書き：行（列）は右→左、各行は上端揃え。linesは文節折り返し済み
+  const cols = lines.length;
+  const colW = fs * 1.35, rowH = fs * 1.28;
+  const x0 = cxPx + (cols-1)*colW/2;
+  ctx.font = (bold ? "bold " : "") + fs + 'px "Shippori Antique", "Hiragino Kaku Gothic ProN", sans-serif';
+  ctx.fillStyle = "#111";
+  ctx.textAlign = "center"; ctx.textBaseline = "middle";
+  lines.forEach((line, ci) => {
+    const x = x0 - ci*colW;
+    [...line].forEach((ch, j) => {
+      const y = topPx + j*rowH + rowH/2;
+      if(ROTATE_CHARS.has(ch)){
+        ctx.save(); ctx.translate(x,y); ctx.rotate(Math.PI/2);
+        ctx.fillText(ch,0,0); ctx.restore();
+      }else if(SHIFT_CHARS.has(ch)){
+        ctx.fillText(ch, x+fs*0.55, y-fs*0.5);
+      }else{
+        ctx.fillText(ch, x, y);
+      }
+    });
+  });
+}
+
+function exportPagePNG(idx){
+  const W = 1240, H = Math.round(1240*1.4142);
+  const cv = document.createElement("canvas");
+  cv.width = W; cv.height = H;
+  const ctx = cv.getContext("2d");
+  ctx.fillStyle = "#fff"; ctx.fillRect(0,0,W,H);
+  const page = pages[idx];
+  const quads = pageQuads(idx, page);
+
+  // コマ枠
+  ctx.strokeStyle = "#111"; ctx.lineWidth = 6;
+  quads.forEach(q => {
+    ctx.beginPath();
+    q.forEach((p,i)=> i? ctx.lineTo(p[0]*W, p[1]*H) : ctx.moveTo(p[0]*W, p[1]*H));
+    ctx.closePath(); ctx.stroke();
+  });
+
+  // ラフ
+  ctx.strokeStyle = "#2a2a35"; ctx.lineCap="round"; ctx.lineJoin="round";
+  for(const s of (state.strokes[idx]||[])){
+    ctx.lineWidth = s.size * (W/560);
+    ctx.beginPath();
+    s.points.forEach((p,i)=> i? ctx.lineTo(p[0]*W,p[1]*H) : ctx.moveTo(p[0]*W,p[1]*H));
+    ctx.stroke();
+  }
+
+  // ト書き・フキダシ
+  page.panels.forEach((panel, pi) => {
+    const r = quadBBox(quads[Math.min(pi, quads.length-1)] || rectToQuad({x:.05,y:.05,w:.9,h:.9}));
+    ctx.font = '24px "Hiragino Kaku Gothic ProN", sans-serif';
+    ctx.fillStyle = "#888"; ctx.textAlign="left"; ctx.textBaseline="top";
+    panel.notes.forEach((note,ni)=> ctx.fillText("＊"+note, (r.x+0.015)*W, (r.y+0.012)*H + ni*30));
+
+    let cursorX = r.x + r.w - 0.02;
+    panel.texts.forEach(t => {
+      const box = t.pinned ? state.bubbleBox[t.key] : null;
+      const {fs, w:bw, h:bh, rows, lines} = bubbleMetrics(t.body, W, r.h, t.q, box, t.type);
+      let cx, cy;
+      const off = t.pinned ? state.offsets[t.key] : null;
+      if(off){ cx = off.x; cy = off.y; }
+      else{
+        cx = cursorX - (bw/W)/2;
+        cy = r.y + 0.025 + (bh/H)/2;
+        if(cx - (bw/W)/2 < r.x) cx = r.x + 0.02 + (bw/W)/2;
+      }
+      cursorX = cx - (bw/W)/2 - 0.015;
+      // フキダシ外形（心の声=thoughtは直置きで枠なし）
+      if(t.type !== "thought"){
+        traceBubblePath(ctx, t.type, cx*W, cy*H, bw/2, bh/2);
+        ctx.fillStyle = "rgba(255,255,255,.95)";
+        ctx.strokeStyle = "#222";
+        ctx.lineWidth = t.type === "shout" ? 5 : (t.type === "flash" ? 2 : 3);
+        ctx.fill(); ctx.stroke();
+      }
+      drawVText(ctx, lines, cx*W, cy*H - (rows*fs*1.28)/2, fs,
+        t.type === "shout" || t.type === "flash");
+      if(t.speaker){
+        ctx.font = (fs*0.6) + 'px "Shippori Antique", "Hiragino Kaku Gothic ProN", sans-serif';
+        ctx.fillStyle = "#666"; ctx.textAlign="center"; ctx.textBaseline="bottom";
+        ctx.fillText(t.speaker, cx*W, (cy - (bh/H)/2)*H - 4);
+      }
+    });
+  });
+
+  const a = document.createElement("a");
+  a.download = (state.title || "name") + "_p" + String(idx+1).padStart(3,"0") + ".png";
+  a.href = cv.toDataURL("image/png");
+  a.click();
+  toast("p." + (idx+1) + " をPNG書き出ししました");
+}
+
+/* ---------------- 保存・読込 ---------------- */
+function persist(){
+  try{
+    if(currentProjId) localStorage.setItem(LS_PREFIX+currentProjId, JSON.stringify(state));
+  }catch(e){}
+}
+function toast(msg){
+  const t = document.getElementById("toast");
+  t.textContent = msg; t.classList.add("show");
+  clearTimeout(toast._tm);
+  toast._tm = setTimeout(()=> t.classList.remove("show"), 1800);
+}
+function download(name, content, type){
+  const a = document.createElement("a");
+  a.download = name;
+  a.href = URL.createObjectURL(new Blob([content], {type}));
+  a.click();
+  setTimeout(()=> URL.revokeObjectURL(a.href), 5000);
+}
+
+/* ---------------- イベント ---------------- */
+const scriptEl = document.getElementById("script");
+const titleEl = document.getElementById("title");
+let parseTimer;
+scriptEl.addEventListener("input", () => {
+  state.script = scriptEl.value;
+  clearTimeout(parseTimer);
+  parseTimer = setTimeout(() => {
+    pages = parseScript(state.script);
+    if(editPageIdx >= pages.length) editPageIdx = pages.length-1;
+    renderOverview();
+    if(editPageIdx >= 0) renderEditor();
+    persist();
+  }, 250);
+});
+titleEl.addEventListener("input", ()=>{ state.title = titleEl.value; persist(); renderProjectSelect(); });
+
+/* ---------------- プロジェクト切り替え ---------------- */
+const projSel = document.getElementById("projSel");
+function renderProjectSelect(){
+  const idx = loadIndex(); if(!idx) return;
+  projSel.innerHTML = "";
+  idx.order.forEach(id => {
+    const o = document.createElement("option");
+    o.value = id;
+    o.textContent = readProj(id).title || "無題";
+    projSel.appendChild(o);
+  });
+  projSel.value = currentProjId;
+}
+function openProject(id){
+  currentProjId = id;
+  const idx = loadIndex(); idx.current = id; saveIndex(idx);
+  resetStateTo(readProj(id));
+  if(editPageIdx >= 0){ editPageIdx = -1; editor.classList.remove("open"); }
+  initFromState();
+  renderProjectSelect();
+}
+projSel.addEventListener("change", () => {
+  if(projSel.value === currentProjId) return;
+  persist();
+  openProject(projSel.value);
+});
+document.getElementById("btnNewProj").addEventListener("click", () => {
+  persist();
+  openProject(createProject(Object.assign(defaults(), {title:"無題", paper: state.paper})));
+});
+document.getElementById("btnDupProj").addEventListener("click", () => {
+  persist();
+  const copy = JSON.parse(JSON.stringify(state));
+  copy.title = (copy.title || "無題") + "のコピー";
+  openProject(createProject(copy));
+  toast("複製しました");
+});
+document.getElementById("btnDelProj").addEventListener("click", () => {
+  if(!confirm("「" + (state.title || "無題") + "」を削除しますか？（元に戻せません）")) return;
+  localStorage.removeItem(LS_PREFIX + currentProjId);
+  handleDel(currentProjId); // 記憶していた保存先も忘れる
+  const idx = loadIndex();
+  idx.order = idx.order.filter(id => id !== currentProjId);
+  saveIndex(idx);
+  if(!idx.order.length){
+    openProject(createProject(Object.assign(defaults(), {title:"無題"})));
+  }else{
+    openProject(idx.order[0]);
+  }
+  toast("削除しました");
+});
+
+/* ---------------- 用紙サイズ ---------------- */
+document.getElementById("paperSel").addEventListener("change", (e) => {
+  state.paper = e.target.value;
+  persist();
+  renderOverview();
+  if(editPageIdx >= 0) renderEditor();
+});
+
+document.getElementById("colSeg").addEventListener("click", (e) => {
+  const b = e.target.closest("button"); if(!b) return;
+  state.cols = +b.dataset.cols;
+  [...document.querySelectorAll("#colSeg button")].forEach(x=>x.classList.toggle("active", x===b));
+  renderOverview(); persist();
+});
+
+/* ---------------- ファイル保存（同じファイルへの上書き対応） ----------------
+   File System Access API があれば、初回だけ保存先を選び、以後は上書き。
+   保存先ハンドルはプロジェクトごとに IndexedDB へ永続化。
+   非対応ブラウザは従来どおりダウンロードにフォールバック */
+const FS_OK = "showSaveFilePicker" in window;
+function fsdb(){
+  return new Promise((res, rej) => {
+    const r = indexedDB.open("nemsproto-fs", 1);
+    r.onupgradeneeded = () => r.result.createObjectStore("handles");
+    r.onsuccess = () => res(r.result);
+    r.onerror = () => rej(r.error);
+  });
+}
+async function handleGet(id){
+  try{
+    const db = await fsdb();
+    return await new Promise((res, rej) => {
+      const rq = db.transaction("handles").objectStore("handles").get(id);
+      rq.onsuccess = () => res(rq.result || null);
+      rq.onerror = () => rej(rq.error);
+    });
+  }catch(e){ return null; }
+}
+async function handleSet(id, h){
+  try{
+    const db = await fsdb();
+    await new Promise((res, rej) => {
+      const tx = db.transaction("handles", "readwrite");
+      tx.objectStore("handles").put(h, id);
+      tx.oncomplete = res; tx.onerror = () => rej(tx.error);
+    });
+  }catch(e){}
+}
+async function handleDel(id){
+  try{
+    const db = await fsdb();
+    await new Promise((res, rej) => {
+      const tx = db.transaction("handles", "readwrite");
+      tx.objectStore("handles").delete(id);
+      tx.oncomplete = res; tx.onerror = () => rej(tx.error);
+    });
+  }catch(e){}
+}
+async function saveProject(forcePicker){
+  const json = JSON.stringify(state, null, 1);
+  if(!FS_OK){
+    download((state.title||"name") + ".json", json, "application/json");
+    toast("ダウンロードしました（このブラウザは上書き保存非対応）");
+    return;
+  }
+  try{
+    let h = forcePicker ? null : await handleGet(currentProjId);
+    if(h){
+      let perm = await h.queryPermission({mode:"readwrite"});
+      if(perm !== "granted") perm = await h.requestPermission({mode:"readwrite"});
+      if(perm !== "granted") h = null;
+    }
+    if(!h){
+      h = await window.showSaveFilePicker({
+        suggestedName: (state.title||"name") + ".json",
+        types: [{description:"ネームプロト プロジェクト", accept:{"application/json":[".json"]}}],
+      });
+      await handleSet(currentProjId, h);
+    }
+    const w = await h.createWritable();
+    await w.write(json);
+    await w.close();
+    toast("「" + h.name + "」に上書き保存しました");
+  }catch(err){
+    if(err && err.name === "AbortError") return; // ダイアログのキャンセル
+    toast("保存に失敗しました：" + (err && err.message || err));
+  }
+}
+document.getElementById("btnSave").addEventListener("click", () => saveProject(false));
+document.getElementById("btnSaveAs").addEventListener("click", () => saveProject(true));
+document.getElementById("btnLoad").addEventListener("click", async () => {
+  if(!FS_OK){ document.getElementById("fileInput").click(); return; }
+  try{
+    const [h] = await window.showOpenFilePicker({
+      types: [{description:"ネームプロト プロジェクト", accept:{"application/json":[".json"]}}],
+    });
+    const data = JSON.parse(await (await h.getFile()).text());
+    resetStateTo(data);
+    persist();
+    initFromState();
+    renderProjectSelect();
+    await handleSet(currentProjId, h); // 開いたファイルがそのまま上書き先になる
+    toast("「" + h.name + "」を読み込みました。保存で同じファイルに上書きされます");
+  }catch(err){
+    if(err && err.name !== "AbortError") toast("読込に失敗しました");
+  }
+});
+document.getElementById("fileInput").addEventListener("change", async (e) => {
+  const f = e.target.files[0]; if(!f) return;
+  try{
+    const data = JSON.parse(await f.text());
+    resetStateTo(data); // 現在のプロジェクトの内容として読み込む
+    persist();
+    initFromState();
+    renderProjectSelect();
+    toast("読み込みました");
+  }catch(err){ toast("読込に失敗しました"); }
+  e.target.value = "";
+});
+document.getElementById("btnTxt").addEventListener("click", () => {
+  download((state.title||"name") + ".txt", state.script, "text/plain");
+});
+
+document.getElementById("btnClose").addEventListener("click", closeEditor);
+document.getElementById("btnPrev").addEventListener("click", ()=>{
+  const s = spreadOf(editPageIdx);
+  if(s[0] > 0){ editPageIdx = s[0] - 1; renderEditor(); }
+});
+document.getElementById("btnNext").addEventListener("click", ()=>{
+  const s = spreadOf(editPageIdx);
+  const last = s[s.length-1];
+  if(last < pages.length - 1){ editPageIdx = last + 1; renderEditor(); }
+});
+document.getElementById("btnSpread").addEventListener("click", (e)=>{
+  spreadMode = !spreadMode;
+  e.target.classList.toggle("active", spreadMode);
+  renderEditor();
+});
+document.getElementById("btnUndo").addEventListener("click", undoAction);
+document.getElementById("btnOneFrame").addEventListener("click", () => {
+  if(editPageIdx < 0) return;
+  pushHistory(editPageIdx, {kind:"layout",
+    prev: state.layouts[editPageIdx] ? state.layouts[editPageIdx].map(q=>q.map(p=>p.slice())) : null});
+  state.layouts[editPageIdx] = [rectToQuad({x:0.045, y:0.032, w:0.91, h:0.936})];
+  persist(); renderEditor();
+  toast("1コマに結合しました。線を引いて割ってください");
+});
+document.getElementById("btnResetLayout").addEventListener("click", () => {
+  if(editPageIdx < 0 || !state.layouts[editPageIdx]) return;
+  pushHistory(editPageIdx, {kind:"layout",
+    prev: state.layouts[editPageIdx].map(q=>q.map(p=>p.slice()))});
+  delete state.layouts[editPageIdx];
+  persist(); renderEditor();
+  toast("コマ割りを自動レイアウトに戻しました");
+});
+document.getElementById("btnPng").addEventListener("click", ()=> spreadOf(editPageIdx).forEach(exportPagePNG));
+[...document.querySelectorAll(".tool")].forEach(b => {
+  b.addEventListener("click", () => {
+    tool = b.dataset.tool;
+    [...document.querySelectorAll(".tool")].forEach(x=>x.classList.toggle("active", x===b));
+  });
+});
+
+document.addEventListener("keydown", (e) => {
+  if(e.key === "Escape" && editPageIdx >= 0){ closeEditor(); }
+  if((e.metaKey||e.ctrlKey) && e.key === "z" && editPageIdx >= 0 && document.activeElement !== scriptEl){
+    e.preventDefault(); undoAction();
+  }
+});
+
+// 台本ペインのリサイズ
+(() => {
+  const bar = document.getElementById("dragbar");
+  const pane = document.getElementById("scriptPane");
+  let dragging = false;
+  bar.addEventListener("pointerdown", (e)=>{ dragging = true; bar.setPointerCapture(e.pointerId); });
+  bar.addEventListener("pointermove", (e)=>{ if(dragging) pane.style.width = e.clientX + "px"; });
+  bar.addEventListener("pointerup", ()=> dragging = false);
+})();
+
+window.addEventListener("resize", () => {
+  renderOverview();
+  if(editPageIdx >= 0) renderEditor();
+});
+
+/* ---------------- 初期化 ---------------- */
+function initFromState(){
+  state.offsets ||= {}; state.strokes ||= {}; state.layouts ||= {}; state.bubbleBox ||= {}; // 旧形式JSON対策
+  delete state.bubbleRows; delete state.bubbleH; // 旧リサイズ方式のデータは廃止
+  titleEl.value = state.title || "";
+  document.getElementById("paperSel").value = PAPER_W_MM[state.paper] ? state.paper : "B4";
+  scriptEl.value = state.script || "";
+  [...document.querySelectorAll("#colSeg button")].forEach(b =>
+    b.classList.toggle("active", +b.dataset.cols === state.cols));
+  pages = parseScript(state.script);
+  renderOverview();
+}
+
+(function boot(){
+  let idx = loadIndex();
+  if(!idx){
+    // 初回：旧単一保存があれば移行、無ければサンプル（sample.js）で開始
+    let first = null;
+    try{ first = JSON.parse(localStorage.getItem(LS_LEGACY)); }catch(e){}
+    if(!first || !first.script){
+      first = Object.assign(defaults(), window.NEMS_SAMPLE
+        ? {title: NEMS_SAMPLE.title || "", script: NEMS_SAMPLE.script || ""} : {});
+    }
+    createProject(first);
+    localStorage.removeItem(LS_LEGACY);
+    idx = loadIndex();
+  }
+  const id = idx.order.includes(idx.current) ? idx.current : idx.order[0];
+  currentProjId = id;
+  resetStateTo(readProj(id));
+  initFromState();
+  renderProjectSelect();
+  // アンチック体を読み込み、適用後に再描画（PNG書き出しにも効く）
+  if(document.fonts){
+    document.fonts.load('16px "Shippori Antique"').then(() => {
+      renderOverview();
+      if(editPageIdx >= 0) renderEditor();
+    });
+  }
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,4 @@
+.DS_Store
+# 作品ファイルはアプリと分けて置く
+*.json
+!.claude/*.json
